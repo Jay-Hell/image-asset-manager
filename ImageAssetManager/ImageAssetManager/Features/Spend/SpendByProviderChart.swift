@@ -48,11 +48,17 @@ struct SpendByProviderChart: View {
     private var emptyState: some View {
         RoundedRectangle(cornerRadius: 8)
             .fill(Color.appSurfaceRaised)
-            .frame(height: 60)
+            .frame(height: 80)
             .overlay {
-                Text("No data")
-                    .font(.callout)
-                    .foregroundStyle(Color.appTextSecondary)
+                VStack(spacing: 6) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .accessibilityHidden(true)
+                    Text("No data for this period")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appTextSecondary)
+                }
             }
     }
 }

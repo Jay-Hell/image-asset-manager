@@ -75,9 +75,15 @@ struct SpendTimelineChart: View {
             .fill(Color.appSurfaceRaised)
             .frame(height: 180)
             .overlay {
-                Text("No data for this period")
-                    .font(.callout)
-                    .foregroundStyle(Color.appTextSecondary)
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 32))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .accessibilityHidden(true)
+                    Text("No data for this period")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appTextSecondary)
+                }
             }
     }
 }

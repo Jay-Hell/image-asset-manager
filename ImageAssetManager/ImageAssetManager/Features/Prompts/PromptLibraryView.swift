@@ -165,21 +165,29 @@ struct PromptLibraryView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "text.quote")
-                .font(.system(size: 40))
+        VStack(spacing: 16) {
+            Image(systemName: viewModel.searchText.isEmpty ? "text.quote" : "magnifyingglass")
+                .font(.system(size: 48))
                 .foregroundStyle(Color.appTextSecondary)
+                .accessibilityHidden(true)
             Text(viewModel.searchText.isEmpty ? "No prompts yet" : "No prompts match")
                 .font(.title3)
+                .fontWeight(.semibold)
                 .foregroundStyle(Color.appTextPrimary)
             if viewModel.searchText.isEmpty {
                 Text("Save prompts during generation, or create them here.")
-                    .font(.callout)
+                    .font(.system(size: 15))
                     .foregroundStyle(Color.appTextSecondary)
                     .multilineTextAlignment(.center)
                 Button("New Prompt") { viewModel.startCreate() }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.appAccent)
+                    .controlSize(.regular)
+                    .accessibilityLabel("Create new prompt")
+            } else {
+                Text("Try a different search term.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.appTextSecondary)
             }
         }
         .padding(40)

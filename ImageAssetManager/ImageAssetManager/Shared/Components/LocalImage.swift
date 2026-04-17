@@ -1,6 +1,7 @@
 import SwiftUI
 
 // Loads and displays a local file-system image asynchronously.
+// Placeholder and background always use Color.imageMatte per spec.
 struct LocalImage: View {
     let url: URL
     @State private var image: Image?
@@ -10,11 +11,12 @@ struct LocalImage: View {
             if let image {
                 image.resizable().scaledToFill()
             } else {
-                Color.appSurface
+                Color.imageMatte
             }
         }
         .onAppear { loadImage() }
         .onChange(of: url) { _, _ in loadImage() }
+        .accessibilityHidden(true)  // accessibility handled by containing element
     }
 
     private func loadImage() {

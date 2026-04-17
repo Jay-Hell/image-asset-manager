@@ -47,7 +47,7 @@ struct AssetGridView: View {
                 }
 
                 if standaloneAssets.isEmpty && viewModel.displayedVariantFamilies.isEmpty {
-                    emptyState
+                    emptyStateView
                 } else if !standaloneAssets.isEmpty {
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: minTileWidth), spacing: spacing)],
@@ -85,6 +85,8 @@ struct AssetGridView: View {
                 }
                 .keyboardShortcut("g", modifiers: .command)
                 .help("Open Generation Panel (⌘G)")
+                .accessibilityLabel("Open generation panel")
+                .accessibilityHint("Opens the image generation sheet")
             }
         }
         .overlay {
@@ -95,25 +97,82 @@ struct AssetGridView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: 48))
-                .foregroundStyle(Color.appTextSecondary)
-            Text("No assets yet")
-                .font(.title3)
-                .foregroundStyle(Color.appTextPrimary)
-            Text("Generate or import images to build your library.")
-                .font(.callout)
-                .foregroundStyle(Color.appTextSecondary)
-                .multilineTextAlignment(.center)
+    // MARK: - Empty states
+
+    @ViewBuilder
+    private var emptyStateView: some View {
+        if !viewModel.searchText.isEmpty {
+            noSearchResultsState
+        } else if case .collection = viewModel.sourceSelection {
+            emptyCollectionState
+        } else {
+            emptyLibraryState
+        }
+    }
+
+    private var emptyLibraryState: some View {
+        emptyLayout(
+            symbol: "photo.stack",
+            title: "No assets yet",
+            instruction: "Generate or import images to build your library."
+        ) {
             HStack(spacing: 12) {
                 Button("Generate", action: onGenerate)
                     .buttonStyle(.borderedProminent)
                     .tint(Color.appAccent)
+                    .accessibilityLabel("Open generation panel")
                 Button("Import") { viewModel.showImportSheet = true }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("Import images from disk")
             }
+        }
+    }
+
+    private var noSearchResultsState: some View {
+        emptyLayout(
+            symbol: "magnifyingglass",
+            title: "No results",
+            instruction: "No assets match \"\(viewModel.searchText)\"."
+        ) {
+            Button("Clear Search") { viewModel.searchText = "" }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Clear search field")
+        }
+    }
+
+    private var emptyCollectionState: some View {
+        emptyLayout(
+            symbol: "rectangle.stack.badge.plus",
+            title: "This collection is empty",
+            instruction: "Generate or import images and assign them to this collection."
+        ) {
+            Button("Generate", action: onGenerate)
+                .buttonStyle(.borderedProminent)
+                .tint(Color.appAccent)
+                .accessibilityLabel("Open generation panel")
+        }
+    }
+
+    private func emptyLayout<Actions: View>(
+        symbol: String,
+        title: String,
+        instruction: String,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 48))
+                .foregroundStyle(Color.appTextSecondary)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.appTextPrimary)
+            Text(instruction)
+                .font(.system(size: 15))
+                .foregroundStyle(Color.appTextSecondary)
+                .multilineTextAlignment(.center)
+            actions()
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
