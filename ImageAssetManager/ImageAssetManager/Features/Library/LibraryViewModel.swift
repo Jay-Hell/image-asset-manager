@@ -15,6 +15,7 @@ struct AssetDetail {
     let references: [(AssetReference, Asset?)]
     let variantContext: (Variant, [(VariantMember, Asset)])?
     let usage: [AssetUsage]
+    let refinement: PromptRefinement?
 }
 
 @Observable
@@ -126,14 +127,16 @@ final class LibraryViewModel {
         async let refsResult = (try? database.fetchReferencesForAsset(assetID: assetID)) ?? []
         async let variantResult = try? database.fetchVariantContext(assetID: assetID)
         async let usageResult = (try? database.fetchUsageForAsset(assetID: assetID)) ?? []
+        async let refinementResult = try? database.fetchRefinement(forAsset: assetID)
 
-        let (tags, refs, variantCtx, usage) = await (tagsResult, refsResult, variantResult, usageResult)
+        let (tags, refs, variantCtx, usage, refinement) = await (tagsResult, refsResult, variantResult, usageResult, refinementResult)
         inspectorDetail = AssetDetail(
             asset: asset,
             tags: tags,
             references: refs,
             variantContext: variantCtx,
-            usage: usage
+            usage: usage,
+            refinement: refinement
         )
     }
 

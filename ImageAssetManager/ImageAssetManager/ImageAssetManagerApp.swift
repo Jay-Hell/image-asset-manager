@@ -29,6 +29,12 @@ struct ImageAssetManagerApp: App {
         .defaultSize(width: 1200, height: 800)
         .windowToolbarStyle(.unified(showsTitle: false))
         #endif
+
+        #if os(macOS)
+        Settings {
+            SettingsView()
+        }
+        #endif
     }
 
     #if os(macOS)

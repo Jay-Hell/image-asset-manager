@@ -52,4 +52,35 @@ extension AppDatabase {
                 .compactMap { $0["sector"] as? String }
         }
     }
+
+    public func findSimilarPrompts(to draft: String, limit: Int = 5) async throws -> [String] {
+        let stopwords: Set<String> = ["a", "an", "the", "and", "or", "of", "in", "on", "at",
+                                       "to", "for", "with", "is", "are", "was", "be", "that",
+                                       "this", "it", "as", "from", "by", "very", "so", "have"]
+        let keywords = draft
+            .lowercased()
+            .components(separatedBy: .init(charactersIn: " .,;:!?\"'()[]{}"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.count > 3 && !stopwords.contains($0) }
+
+        guard !keywords.isEmpty else { return [] }
+
+        var conditions: [String] = []
+        var args: StatementArguments = []
+        for kw in keywords.prefix(8) {
+            conditions.append("body LIKE ?")
+            _ = args.append(contentsOf: ["%\(kw)%"])
+        }
+        let capturedConditions = conditions
+        let capturedArgs = args
+        let capturedLimit = limit
+
+        return try await read { db in
+            let sql = "SELECT body FROM prompts WHERE \(capturedConditions.joined(separator: " OR ")) ORDER BY usage_count DESC LIMIT ?"
+            var finalArgs = capturedArgs
+            _ = finalArgs.append(contentsOf: [capturedLimit])
+            return try Row.fetchAll(db, sql: sql, arguments: finalArgs)
+                .compactMap { $0["body"] as? String }
+        }
+    }
 }

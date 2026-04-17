@@ -1,6 +1,55 @@
 import GRDB
 import Foundation
 
+// MARK: - Supporting types for prompt refinement
+
+public struct RefinementConversationTurn: Codable, Sendable {
+    public let role: String
+    public let content: String
+
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
+public struct ReferenceContextItem: Sendable {
+    public let role: String
+    public let notes: String?
+
+    public init(role: String, notes: String? = nil) {
+        self.role = role
+        self.notes = notes
+    }
+}
+
+public struct RefinementContext: Sendable {
+    public var projectName: String
+    public var clientName: String?
+    public var activeReferences: [ReferenceContextItem]
+    public var similarPrompts: [String]
+    public var aspectRatio: String
+    public var modelName: String
+
+    public init(
+        projectName: String,
+        clientName: String? = nil,
+        activeReferences: [ReferenceContextItem] = [],
+        similarPrompts: [String] = [],
+        aspectRatio: String,
+        modelName: String
+    ) {
+        self.projectName = projectName
+        self.clientName = clientName
+        self.activeReferences = activeReferences
+        self.similarPrompts = similarPrompts
+        self.aspectRatio = aspectRatio
+        self.modelName = modelName
+    }
+}
+
+// MARK: - Persisted refinement record
+
 public struct PromptRefinement: Codable, FetchableRecord, PersistableRecord, Sendable {
     public static let databaseTableName = "prompt_refinements"
 
@@ -46,5 +95,13 @@ public struct PromptRefinement: Codable, FetchableRecord, PersistableRecord, Sen
         self.conversation = conversation
         self.modelUsed = modelUsed
         self.createdAt = createdAt
+    }
+
+    public var parsedConversation: [RefinementConversationTurn] {
+        guard let data = conversation.data(using: .utf8),
+              let turns = try? JSONDecoder().decode([RefinementConversationTurn].self, from: data) else {
+            return []
+        }
+        return turns
     }
 }
