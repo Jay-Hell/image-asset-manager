@@ -11,12 +11,15 @@ struct ContentView: View {
     @State private var libraryVM: LibraryViewModel?
     @State private var generationVM: GenerationViewModel?
     @State private var promptVM: PromptViewModel?
+    @State private var exportVM: ExportViewModel?
     @State private var showGenerationSheet: Bool = false
+    @State private var showExportSheet: Bool = false
+    @State private var assetToExport: Asset?
     @State private var activeTab: AppTab = .library
 
     var body: some View {
         Group {
-            if let libraryVM, let generationVM, let promptVM {
+            if let libraryVM, let generationVM, let promptVM, let exportVM {
                 activeView(libraryVM: libraryVM, generationVM: generationVM, promptVM: promptVM)
                     .toolbar {
                         ToolbarItem(placement: .principal) {
@@ -35,6 +38,15 @@ struct ContentView: View {
                             #if os(macOS)
                             .frame(width: 840, height: 700)
                             #endif
+                    }
+                    .sheet(isPresented: $showExportSheet, onDismiss: { exportVM.resetExport() }) {
+                        if let asset = assetToExport {
+                            ExportSheetView(
+                                viewModel: exportVM,
+                                asset: asset,
+                                libraryURL: env.libraryURL
+                            )
+                        }
                     }
                     .onChange(of: showGenerationSheet) { _, isShowing in
                         guard !isShowing else { return }
@@ -56,12 +68,10 @@ struct ContentView: View {
             let newGenVM = GenerationViewModel(database: env.database, libraryURL: env.libraryURL)
             await newGenVM.loadInitialData()
 
-            let newLibVM = LibraryViewModel(database: env.database, libraryURL: env.libraryURL)
-            let newPromptVM = PromptViewModel(database: env.database, libraryURL: env.libraryURL)
-
             generationVM = newGenVM
-            libraryVM = newLibVM
-            promptVM = newPromptVM
+            libraryVM = LibraryViewModel(database: env.database, libraryURL: env.libraryURL)
+            promptVM = PromptViewModel(database: env.database, libraryURL: env.libraryURL)
+            exportVM = ExportViewModel(database: env.database)
         }
     }
 
@@ -79,6 +89,10 @@ struct ContentView: View {
                 onRegenerate: { asset in
                     generationVM.prePopulate(from: asset)
                     showGenerationSheet = true
+                },
+                onExport: { asset in
+                    assetToExport = asset
+                    showExportSheet = true
                 }
             )
         case .prompts:

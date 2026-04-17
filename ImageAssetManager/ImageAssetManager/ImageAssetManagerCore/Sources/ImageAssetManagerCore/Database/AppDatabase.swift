@@ -168,6 +168,19 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v2_export_presets") { db in
+            try db.create(table: "export_presets") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("format", .text).notNull().defaults(to: "png")
+                t.column("max_width", .integer)
+                t.column("max_height", .integer)
+                t.column("jpeg_quality", .double).notNull().defaults(to: 0.85)
+                t.column("suffix", .text).notNull().defaults(to: "")
+                t.column("created_at", .text).notNull()
+            }
+        }
+
         try migrator.migrate(writer)
     }
 
