@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Package.resolved — commit this to pin dependency versions
+# *.resolved
+
+# Secrets
+*.env
+Secrets/

@@ -101,11 +101,18 @@ git checkout -b feature/phase-N-description
 git checkout develop && git merge feature/phase-N-description
 ```
 
+## Current Status
+
+**Phase 0 — scaffold not yet started.** The Xcode project, Swift package, and all source files remain to be created. Build commands below will work once the Xcode project exists.
+
 ## Common Commands
 
 ```bash
-# Build (from repo root after Xcode project exists)
+# Build (macOS)
 xcodebuild -scheme ImageAssetManager -destination 'platform=macOS' build
+
+# Build (iPad simulator)
+xcodebuild -scheme ImageAssetManager -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' build
 
 # Run tests (Core package)
 swift test --package-path Packages/ImageAssetManagerCore
@@ -114,7 +121,20 @@ swift test --package-path Packages/ImageAssetManagerCore
 swift test --package-path Packages/ImageAssetManagerCore --filter TestSuiteName/testMethodName
 ```
 
+## Phase 0 Checklist
+
+Tasks required before Phase 1 can begin:
+
+- [ ] Create Xcode project (`ImageAssetManager.xcodeproj`) targeting macOS 14+ and iPadOS 17+
+- [ ] Add `Packages/ImageAssetManagerCore` as a local Swift package
+- [ ] Configure iCloud Drive entitlement (`com.apple.developer.ubiquity-container-identifiers`)
+- [ ] Add GRDB as a dependency in `ImageAssetManagerCore/Package.swift`
+- [ ] Set bundle ID and iCloud container ID (resolves `[org]` placeholder below)
+- [ ] Push initial scaffold to `develop`
+
 ## MCP Server Config (add to Claude Code settings after Phase 8)
+
+Replace `[org]` with the actual reverse-DNS org segment used in the iCloud container ID.
 
 ```json
 {
