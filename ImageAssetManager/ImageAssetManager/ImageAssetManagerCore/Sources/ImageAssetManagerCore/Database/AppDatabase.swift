@@ -5,7 +5,11 @@ public final class AppDatabase: Sendable {
     private let writer: DatabaseQueue
 
     public init(path: String) throws {
-        writer = try DatabaseQueue(path: path)
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA journal_mode=WAL")
+        }
+        writer = try DatabaseQueue(path: path, configuration: config)
 
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1_initial_schema") { db in

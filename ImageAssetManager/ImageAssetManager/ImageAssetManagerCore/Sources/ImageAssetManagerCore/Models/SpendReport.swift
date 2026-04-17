@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SpendSummary: Sendable {
+public struct SpendSummary: Codable, Sendable {
     public let totalEstimated: Double
     public let totalActual: Double
     public let generationCount: Int
