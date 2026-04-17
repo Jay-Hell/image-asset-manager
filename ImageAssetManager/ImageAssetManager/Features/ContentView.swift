@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var spendVM: SpendViewModel?
     @State private var showGenerationSheet: Bool = false
     @State private var showExportSheet: Bool = false
+    @State private var showSettingsSheet: Bool = false
     @State private var assetToExport: Asset?
     @State private var activeTab: AppTab = .library
 
@@ -42,6 +43,19 @@ struct ContentView: View {
                             #if os(macOS)
                             .frame(width: 840, height: 700)
                             #endif
+                    }
+                    #if !os(macOS)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button { showSettingsSheet = true } label: {
+                                Image(systemName: "gear")
+                                    .accessibilityLabel("Settings")
+                            }
+                        }
+                    }
+                    #endif
+                    .sheet(isPresented: $showSettingsSheet) {
+                        NavigationStack { SettingsView() }
                     }
                     .sheet(isPresented: $showExportSheet, onDismiss: { exportVM.resetExport() }) {
                         if let asset = assetToExport {

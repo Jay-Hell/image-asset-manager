@@ -56,6 +56,11 @@ struct InspectorPanelView: View {
                         Divider()
                         usageSection
                     }
+
+                    if let refinement = detail.refinement {
+                        Divider()
+                        refinementSection(refinement)
+                    }
                 }
                 .padding(12)
             }
@@ -261,6 +266,58 @@ struct InspectorPanelView: View {
                             .foregroundStyle(Color.appTextSecondary)
                     }
                 }
+            }
+        }
+    }
+
+    private func refinementSection(_ refinement: PromptRefinement) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text(refinement.mode.capitalized)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.appAccent, in: Capsule())
+                        Text(refinement.modelUsed)
+                            .font(.caption2)
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Draft")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.appTextSecondary)
+                        Text(refinement.draftPrompt)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.appTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    let turns = refinement.parsedConversation
+                    if !turns.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Conversation")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.appTextSecondary)
+                            ForEach(Array(turns.enumerated()), id: \.offset) { _, turn in
+                                HStack(alignment: .top, spacing: 4) {
+                                    Text(turn.role == "user" ? "👤" : "🤖")
+                                        .font(.system(size: 11))
+                                    Text(turn.content)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color.appTextPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                sectionHeader("Prompt Refinement")
             }
         }
     }

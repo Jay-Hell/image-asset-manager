@@ -38,6 +38,15 @@ final class GenerationViewModel {
     var selectedVariantFamilyName: String = ""
     var saveToPromptLibrary: Bool = false
     var promptLibraryTitle: String = ""
+    var pendingRefinement: PendingRefinement?
+
+    struct PendingRefinement: Sendable {
+        let mode: String
+        let draftPrompt: String
+        let conversationJSON: String
+        let modelUsed: String
+        let finalPrompt: String
+    }
 
     // MARK: - Prompt picker
     var allPrompts: [Prompt] = []
@@ -292,6 +301,19 @@ final class GenerationViewModel {
             }
         }
 
+        if let pending = pendingRefinement {
+            let refinement = PromptRefinement(
+                assetID: assetID,
+                mode: pending.mode,
+                draftPrompt: pending.draftPrompt,
+                finalPrompt: pending.finalPrompt,
+                conversation: pending.conversationJSON,
+                modelUsed: pending.modelUsed,
+                createdAt: now
+            )
+            try await database.saveRefinement(refinement)
+        }
+
         let indexURL = libraryURL.appending(path: "index.json")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
 
@@ -327,5 +349,6 @@ final class GenerationViewModel {
         selectedVariantFamilyName = ""
         saveToPromptLibrary = false
         promptLibraryTitle = ""
+        pendingRefinement = nil
     }
 }

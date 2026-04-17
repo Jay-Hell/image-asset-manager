@@ -6,6 +6,9 @@ struct GenerationPanelView: View {
     @State private var showPromptPicker = false
     @State private var isConfirming = false
     @State private var confirmError: String?
+    @State private var showRefinementPanel = false
+    @State private var refinementSession: PromptRefinementSession?
+    @State private var showRefinementSheet = false
 
     var body: some View {
         ZStack {
@@ -32,6 +35,13 @@ struct GenerationPanelView: View {
         }
         .sheet(isPresented: $showPromptPicker) {
             PromptLibraryPickerView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showRefinementSheet) {
+            if let session = refinementSession {
+                RefinementSheetView(session: session) {
+                    acceptRefinement(session: session)
+                }
+            }
         }
         #if os(macOS)
         .frame(minWidth: 560, minHeight: 580)
@@ -149,6 +159,25 @@ struct GenerationPanelView: View {
                     .kerning(0.5)
                 Spacer()
                 Button {
+                    openRefinementPanel()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text("Refine")
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(showRefinementPanel ? .white : Color.appAccent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        showRefinementPanel ? Color.appAccent : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Refine prompt with Claude AI")
+
+                Button {
                     showPromptPicker = true
                 } label: {
                     Label("Load from Library", systemImage: "text.quote")
@@ -180,6 +209,22 @@ struct GenerationPanelView: View {
                             .padding(14)
                     }
                 }
+
+            // Inline refinement panel (macOS only — iPad uses sheet)
+            #if os(macOS)
+            if showRefinementPanel, let session = refinementSession {
+                RefinementPanelView(
+                    session: session,
+                    onAccept: { acceptRefinement(session: session) },
+                    onDismiss: { showRefinementPanel = false }
+                )
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .onChange(of: session.draftPrompt) { _, newDraft in
+                    viewModel.promptText = newDraft
+                }
+            }
+            #endif
 
             // Negative prompt toggle + field
             Button {
@@ -329,7 +374,56 @@ struct GenerationPanelView: View {
         .background(Color.appSurface)
     }
 
-    // MARK: - Helpers
+    // MARK: - Refinement helpers
+
+    private func openRefinementPanel() {
+        #if os(macOS)
+        if showRefinementPanel {
+            showRefinementPanel = false
+            return
+        }
+        #endif
+        let project = viewModel.projects.first(where: { $0.id == viewModel.selectedProjectID })
+        let refs = viewModel.referenceEntries.map { entry in
+            ReferenceContextItem(role: entry.role, notes: entry.notes)
+        }
+        let context = RefinementContext(
+            projectName: project?.name ?? "No Project",
+            clientName: project?.clientName,
+            activeReferences: refs,
+            similarPrompts: [],
+            aspectRatio: viewModel.aspectRatio.rawValue,
+            modelName: viewModel.currentModel?.displayName ?? "Unknown"
+        )
+        let session = PromptRefinementSession(draft: viewModel.promptText, context: context)
+        refinementSession = session
+
+        Task {
+            let similar = (try? await viewModel.database.findSimilarPrompts(to: viewModel.promptText)) ?? []
+            session.context.similarPrompts = similar
+        }
+
+        #if os(macOS)
+        showRefinementPanel = true
+        #else
+        showRefinementSheet = true
+        #endif
+    }
+
+    private func acceptRefinement(session: PromptRefinementSession) {
+        viewModel.promptText = session.refinedPrompt
+        viewModel.pendingRefinement = GenerationViewModel.PendingRefinement(
+            mode: session.mode.rawValue.lowercased(),
+            draftPrompt: session.draftPrompt,
+            conversationJSON: session.conversationJSON(),
+            modelUsed: AnthropicClient.defaultModel,
+            finalPrompt: session.refinedPrompt
+        )
+        showRefinementPanel = false
+        showRefinementSheet = false
+    }
+
+    // MARK: - Aspect ratio helpers
 
     private func label(for ratio: AspectRatio) -> String {
         switch ratio {
