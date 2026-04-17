@@ -1,0 +1,188 @@
+import GRDB
+import Foundation
+
+// MARK: - Asset search
+extension AppDatabase {
+    public func searchAssets(
+        projectID: String? = nil,
+        collectionID: String? = nil,
+        tagID: String? = nil,
+        variantFamilyID: String? = nil,
+        searchText: String? = nil
+    ) async throws -> [Asset] {
+        try await read { db in
+            var request = Asset.order(Column("created_at").desc)
+            if let pid = projectID {
+                request = request.filter(Column("project_id") == pid)
+            }
+            if let cid = collectionID {
+                request = request.filter(Column("collection_id") == cid)
+            }
+            if let tid = tagID {
+                request = request.filter(SQL("id IN (SELECT asset_id FROM asset_tags WHERE tag_id = \(tid))"))
+            }
+            if let vid = variantFamilyID {
+                request = request.filter(SQL("id IN (SELECT asset_id FROM variant_members WHERE variant_id = \(vid))"))
+            }
+            if let text = searchText, !text.isEmpty {
+                let pattern = "%\(text)%"
+                request = request.filter(SQL("prompt LIKE \(pattern) OR filename LIKE \(pattern)"))
+            }
+            return try request.fetchAll(db)
+        }
+    }
+
+    public func fetchAllCollections() async throws -> [ImageCollection] {
+        try await read { db in
+            try ImageCollection.order(Column("name")).fetchAll(db)
+        }
+    }
+
+    public func fetchTagsWithCounts() async throws -> [(Tag, Int)] {
+        try await read { db in
+            let tags = try Tag.order(Column("name")).fetchAll(db)
+            return try tags.map { tag in
+                let count = try AssetTag.filter(Column("tag_id") == tag.id).fetchCount(db)
+                return (tag, count)
+            }
+        }
+    }
+
+    public func fetchVariantFamilies(projectID: String? = nil) async throws -> [(Variant, [(VariantMember, Asset)])] {
+        try await read { db in
+            var variantReq = Variant.order(Column("created_at").desc)
+            if let pid = projectID {
+                variantReq = variantReq.filter(Column("project_id") == pid)
+            }
+            let variants = try variantReq.fetchAll(db)
+            return try variants.compactMap { variant in
+                let members = try VariantMember
+                    .filter(Column("variant_id") == variant.id)
+                    .order(Column("sequence"))
+                    .fetchAll(db)
+                guard !members.isEmpty else { return nil }
+                let pairs: [(VariantMember, Asset)] = try members.compactMap { member in
+                    guard let asset = try Asset.fetchOne(db, key: member.assetID) else { return nil }
+                    return (member, asset)
+                }
+                return pairs.isEmpty ? nil : (variant, pairs)
+            }
+        }
+    }
+
+    public func fetchVariantMemberAssetIDs() async throws -> Set<String> {
+        try await read { db in
+            Set(try VariantMember.fetchAll(db).map(\.assetID))
+        }
+    }
+}
+
+// MARK: - Asset detail
+extension AppDatabase {
+    public func fetchTagsForAsset(assetID: String) async throws -> [Tag] {
+        try await read { db in
+            try Tag
+                .filter(SQL("id IN (SELECT tag_id FROM asset_tags WHERE asset_id = \(assetID))"))
+                .order(Column("name"))
+                .fetchAll(db)
+        }
+    }
+
+    public func fetchReferencesForAsset(assetID: String) async throws -> [(AssetReference, Asset?)] {
+        try await read { db in
+            let refs = try AssetReference.filter(Column("asset_id") == assetID).fetchAll(db)
+            return try refs.map { ref in
+                var refAsset: Asset?
+                if let entryID = ref.referenceEntryID,
+                   let entry = try ReferenceEntry.fetchOne(db, key: entryID) {
+                    refAsset = try Asset.fetchOne(db, key: entry.assetID)
+                }
+                return (ref, refAsset)
+            }
+        }
+    }
+
+    public func fetchVariantContext(assetID: String) async throws -> (Variant, [(VariantMember, Asset)])? {
+        try await read { db in
+            guard let membership = try VariantMember.filter(Column("asset_id") == assetID).fetchOne(db),
+                  let variant = try Variant.fetchOne(db, key: membership.variantID)
+            else { return nil }
+
+            let members = try VariantMember
+                .filter(Column("variant_id") == variant.id)
+                .order(Column("sequence"))
+                .fetchAll(db)
+            let pairs: [(VariantMember, Asset)] = try members.compactMap { m in
+                guard let a = try Asset.fetchOne(db, key: m.assetID) else { return nil }
+                return (m, a)
+            }
+            return (variant, pairs)
+        }
+    }
+
+    public func fetchUsageForAsset(assetID: String) async throws -> [AssetUsage] {
+        try await read { db in
+            try AssetUsage.filter(Column("asset_id") == assetID).fetchAll(db)
+        }
+    }
+}
+
+// MARK: - Mutations
+extension AppDatabase {
+    public func promoteVariantMember(memberID: String, in variantID: String) async throws {
+        try await write { db in
+            try db.execute(
+                sql: "UPDATE variant_members SET is_selected = 0 WHERE variant_id = ?",
+                arguments: [variantID]
+            )
+            try db.execute(
+                sql: "UPDATE variant_members SET is_selected = 1 WHERE id = ?",
+                arguments: [memberID]
+            )
+        }
+    }
+
+    public func markAssetUsed(assetID: String, usedIn: String) async throws {
+        let usage = AssetUsage(
+            assetID: assetID,
+            usedIn: usedIn,
+            usedAt: ISO8601DateFormatter().string(from: Date()),
+            notedBy: "manual"
+        )
+        try await write { db in try usage.insert(db) }
+    }
+
+    public func moveAssetToCollection(assetID: String, collectionID: String?) async throws {
+        try await write { db in
+            try db.execute(
+                sql: "UPDATE assets SET collection_id = ? WHERE id = ?",
+                arguments: [collectionID, assetID]
+            )
+        }
+    }
+
+    public func setTagsForAsset(assetID: String, tagNames: [String]) async throws {
+        try await write { db in
+            try db.execute(sql: "DELETE FROM asset_tags WHERE asset_id = ?", arguments: [assetID])
+            for name in tagNames.map({ $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }) {
+                let tag: Tag
+                if let existing = try Tag.filter(Column("name") == name).fetchOne(db) {
+                    tag = existing
+                } else {
+                    tag = Tag(name: name)
+                    try tag.insert(db)
+                }
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id) VALUES (?, ?)",
+                    arguments: [assetID, tag.id]
+                )
+            }
+        }
+    }
+
+    public func deleteAsset(id: String) async throws {
+        try await write { db in
+            try db.execute(sql: "DELETE FROM assets WHERE id = ?", arguments: [id])
+        }
+    }
+}
