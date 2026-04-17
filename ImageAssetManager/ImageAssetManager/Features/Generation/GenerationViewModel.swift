@@ -42,7 +42,7 @@ final class GenerationViewModel {
     // MARK: - Prompt picker
     var allPrompts: [Prompt] = []
 
-    private let database: AppDatabase
+    let database: AppDatabase
     private(set) var libraryURL: URL
 
     init(database: AppDatabase, libraryURL: URL) {

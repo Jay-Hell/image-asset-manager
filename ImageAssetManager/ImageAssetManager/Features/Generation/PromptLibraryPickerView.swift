@@ -45,7 +45,7 @@ struct PromptLibraryPickerView: View {
     private var promptList: some View {
         List(filteredPrompts, id: \.id) { prompt in
             Button {
-                apply(prompt)
+                Task { await viewModel.applyPrompt(prompt) }
                 dismiss()
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
@@ -94,11 +94,4 @@ struct PromptLibraryPickerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func apply(_ prompt: Prompt) {
-        viewModel.promptText = prompt.body
-        viewModel.negativePromptText = prompt.negativePrompt ?? ""
-        if !(prompt.negativePrompt ?? "").isEmpty {
-            viewModel.showNegativePrompt = true
-        }
-    }
 }
