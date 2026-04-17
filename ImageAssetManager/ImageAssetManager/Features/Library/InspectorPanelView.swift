@@ -24,6 +24,9 @@ struct InspectorPanelView: View {
                 LocalImage(url: fileURL)
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: .infinity)
+                    .background(Color.imageMatte)
+                    .accessibilityLabel(detail.asset.prompt ?? detail.asset.filename)
+                    .accessibilityAddTraits(.isImage)
 
                 VStack(alignment: .leading, spacing: 16) {
                     actionBar
@@ -70,11 +73,15 @@ struct InspectorPanelView: View {
         HStack(spacing: 8) {
             Button("Re-generate", action: onRegenerate)
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .inspectorButtonStyle()
+                .accessibilityLabel("Re-generate this asset")
+                .accessibilityHint("Opens generation panel pre-filled with this asset's prompt")
             #if os(macOS)
             Button("Export…", action: onExport)
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .inspectorButtonStyle()
+                .accessibilityLabel("Export this asset")
+                .accessibilityHint("Opens the export sheet to save a copy")
             #endif
             Spacer()
             Button(role: .destructive) {
@@ -83,7 +90,9 @@ struct InspectorPanelView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
+            .inspectorButtonStyle()
+            .accessibilityLabel("Delete asset")
+            .accessibilityHint("Permanently removes this asset and its file")
         }
     }
 
@@ -106,13 +115,16 @@ struct InspectorPanelView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionHeader("Prompt")
             Text(prompt)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .foregroundStyle(Color.appTextPrimary)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 6))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if let neg = detail.asset.negativePrompt {
                 Text("Negative: \(neg)")
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.appTextSecondary)
                     .textSelection(.enabled)
             }
@@ -255,24 +267,38 @@ struct InspectorPanelView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.caption)
-            .fontWeight(.semibold)
+            .font(.system(size: 11, weight: .medium))
             .foregroundStyle(Color.appTextSecondary)
             .textCase(.uppercase)
+            .kerning(0.3)
     }
 
     private func labeledRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top) {
             Text(label)
-                .font(.caption)
+                .font(.system(size: 11))
                 .foregroundStyle(Color.appTextSecondary)
                 .frame(width: 70, alignment: .leading)
             Text(value)
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(Color.appTextPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+// MARK: - Shared button style modifier
+
+private extension View {
+    func inspectorButtonStyle() -> some View {
+        self
+            .controlSize(.regular)
+            #if os(macOS)
+            .frame(minHeight: 28)
+            #else
+            .frame(minHeight: 44)
+            #endif
     }
 }
 

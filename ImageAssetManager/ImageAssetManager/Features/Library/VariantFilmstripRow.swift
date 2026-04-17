@@ -42,6 +42,7 @@ struct VariantFilmstripRow: View {
             LocalImage(url: fileURL)
                 .frame(width: 80, height: 80)
                 .clipped()
+                .background(Color.imageMatte)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
             Text("\(member.sequence)")
@@ -54,6 +55,7 @@ struct VariantFilmstripRow: View {
                     in: Circle()
                 )
                 .padding(4)
+                .accessibilityHidden(true)
         }
         .overlay {
             if isSelected {
@@ -66,5 +68,8 @@ struct VariantFilmstripRow: View {
             Button("Promote to Selected") { onPromote(member.id) }
                 .disabled(member.isSelected)
         }
+        .accessibilityElement()
+        .accessibilityLabel("Variant \(member.sequence)\(member.isSelected ? ", selected" : ""): \(asset.prompt ?? asset.filename)")
+        .accessibilityHint("Double-tap to select this variant")
     }
 }

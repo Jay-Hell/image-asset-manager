@@ -158,9 +158,17 @@ struct SpendDashboardView: View {
                 .textCase(.uppercase)
 
             if viewModel.projectBreakdown.isEmpty {
-                Text("No data for this period")
-                    .font(.callout)
-                    .foregroundStyle(Color.appTextSecondary)
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar.doc.horizontal")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .accessibilityHidden(true)
+                    Text("No data for this period")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appTextSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
             } else {
                 ForEach(viewModel.projectBreakdown) { project in
                     HStack(spacing: 8) {
@@ -193,9 +201,17 @@ struct SpendDashboardView: View {
                 .textCase(.uppercase)
 
             if viewModel.providerBreakdown.isEmpty {
-                Text("No data for this period")
-                    .font(.callout)
-                    .foregroundStyle(Color.appTextSecondary)
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .accessibilityHidden(true)
+                    Text("No data for this period")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appTextSecondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
             } else {
                 ForEach(viewModel.providerBreakdown) { provider in
                     HStack(spacing: 8) {
