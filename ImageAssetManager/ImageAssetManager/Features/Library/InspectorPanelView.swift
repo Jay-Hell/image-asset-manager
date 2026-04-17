@@ -7,6 +7,7 @@ struct InspectorPanelView: View {
     var onTagsChanged: ([String]) -> Void
     var onDelete: () -> Void
     var onRegenerate: () -> Void
+    var onExport: () -> Void
     var onPromoteVariant: (String, String) -> Void
 
     @State private var editingTags: Bool = false
@@ -70,6 +71,11 @@ struct InspectorPanelView: View {
             Button("Re-generate", action: onRegenerate)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+            #if os(macOS)
+            Button("Export…", action: onExport)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            #endif
             Spacer()
             Button(role: .destructive) {
                 showDeleteConfirmation = true

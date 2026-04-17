@@ -5,6 +5,7 @@ struct LibraryBrowserView: View {
     @Bindable var viewModel: LibraryViewModel
     var onGenerate: () -> Void
     var onRegenerate: (Asset) -> Void
+    var onExport: (Asset) -> Void
 
     var body: some View {
         NavigationSplitView {
@@ -26,6 +27,7 @@ struct LibraryBrowserView: View {
                             Task { try? await viewModel.deleteAsset(detail.asset.id) }
                         },
                         onRegenerate: { onRegenerate(detail.asset) },
+                        onExport: { onExport(detail.asset) },
                         onPromoteVariant: { memberID, variantID in
                             Task { await viewModel.promoteVariantMember(memberID: memberID, in: variantID) }
                         }
