@@ -4,6 +4,8 @@ public struct NanaBananaProvider: ImageProvider {
     static let keychainService = "com.Ionic.ImageAssetManager"
     static let keychainAccount = "nano_banana_api_key"
 
+    private static let apiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict"
+
     public let providerID = "nano_banana"
     public let displayName = "Nano Banana"
     public let supportsReferenceImages = true
@@ -39,10 +41,8 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.apiKeyNotFound
         }
 
-        let (width, height) = dimensions(for: params.aspectRatio, params: params)
-        let requestBody = buildRequest(params: params, width: width, height: height, references: references)
+        let requestBody = buildRequest(params: params, references: references)
         let request = try buildURLRequest(apiKey: apiKey, body: requestBody)
-
         let (data, response) = try await session.data(for: request)
 
         guard let http = response as? HTTPURLResponse else {
@@ -52,9 +52,7 @@ public struct NanaBananaProvider: ImageProvider {
         switch http.statusCode {
         case 200:
             return try parseResponse(data)
-        case 400:
-            throw ProviderError.invalidAPIKey
-        case 401, 403:
+        case 400, 401, 403:
             throw ProviderError.invalidAPIKey
         case 429:
             throw ProviderError.rateLimited
@@ -64,26 +62,9 @@ public struct NanaBananaProvider: ImageProvider {
         }
     }
 
-    // MARK: - Dimensions
-
-    private func dimensions(for ratio: AspectRatio, params: GenerationParams) -> (Int, Int) {
-        switch ratio {
-        case .square:    return (1024, 1024)
-        case .landscape: return (1792, 1024)
-        case .portrait:  return (1024, 1792)
-        case .custom:    return (params.width, params.height)
-        }
-    }
-
     // MARK: - Request building
-    // TODO: Replace with the confirmed Nano Banana / Google AI endpoint format.
 
-    private func buildRequest(
-        params: GenerationParams,
-        width: Int,
-        height: Int,
-        references: [ReferenceInput]?
-    ) -> [String: Any] {
+    private func buildRequest(params: GenerationParams, references: [ReferenceInput]?) -> [String: Any] {
         var instance: [String: Any] = ["prompt": params.prompt]
         if let neg = params.negativePrompt { instance["negativePrompt"] = neg }
         if let seed = params.seed, let seedInt = Int(seed) { instance["seed"] = seedInt }
@@ -98,21 +79,24 @@ public struct NanaBananaProvider: ImageProvider {
             }
         }
 
+        var apiAspectRatio = params.aspectRatio.rawValue
+        if params.aspectRatio == .custom {
+            // Imagen 3 does not accept arbitrary dimensions; map to closest supported ratio.
+            let ratio = Double(params.width) / Double(params.height)
+            apiAspectRatio = ratio > 1.2 ? "16:9" : ratio < 0.8 ? "9:16" : "1:1"
+        }
+
         return [
             "instances": [instance],
             "parameters": [
                 "sampleCount": 1,
-                "aspectRatio": params.aspectRatio.rawValue,
-                "width": width,
-                "height": height,
+                "aspectRatio": apiAspectRatio,
             ] as [String: Any],
         ]
     }
 
     private func buildURLRequest(apiKey: String, body: [String: Any]) throws -> URLRequest {
-        // TODO: Replace model slug with confirmed Nano Banana model identifier.
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict"
-        guard let url = URL(string: urlString) else {
+        guard let url = URL(string: Self.apiEndpoint) else {
             throw ProviderError.generationFailed("Invalid endpoint URL")
         }
         var req = URLRequest(url: url)
@@ -124,7 +108,6 @@ public struct NanaBananaProvider: ImageProvider {
     }
 
     // MARK: - Response parsing
-    // TODO: Update to match confirmed Nano Banana response format.
 
     func parseResponseForTesting(_ data: Data) throws -> GeneratedImage {
         try parseResponse(data)
@@ -141,8 +124,8 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.invalidResponse
         }
 
-        let mimeType = (first["mimeType"] as? String) ?? "image/png"
-        let format = mimeType.components(separatedBy: "/").last ?? "png"
+        let mimeType = (first["mimeType"] as? String) ?? "image/jpeg"
+        let format = mimeType.components(separatedBy: "/").last ?? "jpeg"
 
         return GeneratedImage(data: imageData, format: format)
     }
