@@ -4,6 +4,7 @@ import ImageAssetManagerCore
 enum AppTab {
     case library
     case prompts
+    case spend
 }
 
 struct ContentView: View {
@@ -12,6 +13,7 @@ struct ContentView: View {
     @State private var generationVM: GenerationViewModel?
     @State private var promptVM: PromptViewModel?
     @State private var exportVM: ExportViewModel?
+    @State private var spendVM: SpendViewModel?
     @State private var showGenerationSheet: Bool = false
     @State private var showExportSheet: Bool = false
     @State private var assetToExport: Asset?
@@ -19,8 +21,8 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if let libraryVM, let generationVM, let promptVM, let exportVM {
-                activeView(libraryVM: libraryVM, generationVM: generationVM, promptVM: promptVM)
+            if let libraryVM, let generationVM, let promptVM, let exportVM, let spendVM {
+                activeView(libraryVM: libraryVM, generationVM: generationVM, promptVM: promptVM, spendVM: spendVM)
                     .toolbar {
                         ToolbarItem(placement: .principal) {
                             Picker("View", selection: $activeTab) {
@@ -28,9 +30,11 @@ struct ContentView: View {
                                     .tag(AppTab.library)
                                 Label("Prompts", systemImage: "text.quote")
                                     .tag(AppTab.prompts)
+                                Label("Spend", systemImage: "chart.bar")
+                                    .tag(AppTab.spend)
                             }
                             .pickerStyle(.segmented)
-                            .frame(width: 220)
+                            .frame(width: 300)
                         }
                     }
                     .sheet(isPresented: $showGenerationSheet) {
@@ -72,6 +76,7 @@ struct ContentView: View {
             libraryVM = LibraryViewModel(database: env.database, libraryURL: env.libraryURL)
             promptVM = PromptViewModel(database: env.database, libraryURL: env.libraryURL)
             exportVM = ExportViewModel(database: env.database)
+            spendVM = SpendViewModel(database: env.database)
         }
     }
 
@@ -79,7 +84,8 @@ struct ContentView: View {
     private func activeView(
         libraryVM: LibraryViewModel,
         generationVM: GenerationViewModel,
-        promptVM: PromptViewModel
+        promptVM: PromptViewModel,
+        spendVM: SpendViewModel
     ) -> some View {
         switch activeTab {
         case .library:
@@ -97,6 +103,8 @@ struct ContentView: View {
             )
         case .prompts:
             PromptLibraryView(viewModel: promptVM)
+        case .spend:
+            SpendDashboardView(viewModel: spendVM)
         }
     }
 }
