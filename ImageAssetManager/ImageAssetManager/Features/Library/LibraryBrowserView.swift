@@ -1,0 +1,53 @@
+import SwiftUI
+import ImageAssetManagerCore
+
+struct LibraryBrowserView: View {
+    @Bindable var viewModel: LibraryViewModel
+    var onGenerate: () -> Void
+    var onRegenerate: (Asset) -> Void
+
+    var body: some View {
+        NavigationSplitView {
+            SourcePanelView(viewModel: viewModel)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+        } content: {
+            AssetGridView(viewModel: viewModel, onGenerate: onGenerate)
+                .navigationSplitViewColumnWidth(min: 320, ideal: 600)
+        } detail: {
+            Group {
+                if let detail = viewModel.inspectorDetail {
+                    InspectorPanelView(
+                        detail: detail,
+                        libraryURL: viewModel.libraryURL,
+                        onTagsChanged: { tagNames in
+                            Task { try? await viewModel.updateAssetTags(assetID: detail.asset.id, tagNames: tagNames) }
+                        },
+                        onDelete: {
+                            Task { try? await viewModel.deleteAsset(detail.asset.id) }
+                        },
+                        onRegenerate: { onRegenerate(detail.asset) },
+                        onPromoteVariant: { memberID, variantID in
+                            Task { await viewModel.promoteVariantMember(memberID: memberID, in: variantID) }
+                        }
+                    )
+                } else {
+                    Color.appBackground.ignoresSafeArea()
+                        .overlay {
+                            Text("Select an asset to inspect")
+                                .foregroundStyle(Color.appTextSecondary)
+                                .font(.callout)
+                        }
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+        }
+        .background(Color.appBackground)
+        .sheet(isPresented: $viewModel.showImportSheet) {
+            ImportView(viewModel: viewModel)
+        }
+        .task {
+            await viewModel.loadSidebarData()
+            await viewModel.loadAssets()
+        }
+    }
+}
