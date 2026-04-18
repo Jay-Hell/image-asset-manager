@@ -23,6 +23,7 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
     public var createdAt: String
     public var importedAt: String?
     public var obsidianEmbedded: Bool
+    public var isHidden: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, filename
@@ -42,6 +43,7 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         case createdAt = "created_at"
         case importedAt = "imported_at"
         case obsidianEmbedded = "obsidian_embedded"
+        case isHidden = "is_hidden"
     }
 
     public init(
@@ -63,7 +65,8 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         actualCost: Double? = nil,
         createdAt: String,
         importedAt: String? = nil,
-        obsidianEmbedded: Bool = false
+        obsidianEmbedded: Bool = false,
+        isHidden: Bool = false
     ) {
         self.id = id
         self.filename = filename
@@ -84,5 +87,6 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         self.createdAt = createdAt
         self.importedAt = importedAt
         self.obsidianEmbedded = obsidianEmbedded
+        self.isHidden = isHidden
     }
 }

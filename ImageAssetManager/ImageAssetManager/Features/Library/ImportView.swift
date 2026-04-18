@@ -20,6 +20,20 @@ struct ImportView: View {
                 }
 
                 Form {
+                    Section {
+                        Picker("File Handling", selection: $viewModel.importMode) {
+                            ForEach(ImportMode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(viewModel.importMode == .move
+                             ? "Move removes the original from its source location."
+                             : "Copy keeps the original in place.")
+                            .font(.caption)
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+
                     Picker("Project", selection: $viewModel.importProjectID) {
                         Text("None").tag(Optional<String>.none)
                         ForEach(viewModel.projects, id: \.id) { project in
@@ -134,12 +148,14 @@ struct ImportView: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        let mode = viewModel.importMode
         Task {
             try? await viewModel.importAssets(
                 urls: viewModel.importURLs,
                 projectID: viewModel.importProjectID,
                 collectionID: viewModel.importCollectionID,
-                tagNames: tagNames
+                tagNames: tagNames,
+                mode: mode
             )
             viewModel.importURLs = []
             viewModel.importTags = ""

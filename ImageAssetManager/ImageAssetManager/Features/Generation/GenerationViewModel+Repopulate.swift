@@ -2,6 +2,13 @@ import Foundation
 import ImageAssetManagerCore
 
 extension GenerationViewModel {
+    func prePopulate(from prompt: Prompt) {
+        promptText = prompt.body
+        let neg = prompt.negativePrompt ?? ""
+        negativePromptText = neg
+        showNegativePrompt = !neg.isEmpty
+    }
+
     func prePopulate(from asset: Asset) {
         if let pid = asset.projectID {
             selectedProjectID = pid

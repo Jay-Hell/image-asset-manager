@@ -185,6 +185,12 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v3_asset_hidden_column") { db in
+            try db.alter(table: "assets") { t in
+                t.add(column: "is_hidden", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         try migrator.migrate(writer)
     }
 

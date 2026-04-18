@@ -168,6 +168,7 @@ swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerC
 | 8 | `feature/phase-8-mcp-server` | — | Local MCP server on localhost:47821 |
 | 9 | `feature/phase-9-visual-polish` | — | Aperture/Lightroom quality bar, accessibility |
 | 10 | `feature/phase-10-prompt-refinement` | — | Claude Prompt Refinement Assistant (Anthropic API, saved history) |
+| 11 | `feature/phase-11-library-refinements` | — | Configurable library location, import move/copy, multi-select hide/delete, generate from prompt |
 
 ### Branching Strategy
 

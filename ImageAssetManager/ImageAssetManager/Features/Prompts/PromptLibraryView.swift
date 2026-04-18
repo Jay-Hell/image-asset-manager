@@ -3,6 +3,7 @@ import ImageAssetManagerCore
 
 struct PromptLibraryView: View {
     @Bindable var viewModel: PromptViewModel
+    var onGenerate: ((Prompt) -> Void)? = nil
 
     var body: some View {
         NavigationSplitView {
@@ -134,6 +135,16 @@ struct PromptLibraryView: View {
                         .padding(.vertical, 2)
                         .background(Color.appSurfaceRaised, in: Capsule())
                 }
+                if let onGenerate {
+                    Button {
+                        onGenerate(prompt)
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                            .foregroundStyle(Color.appAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Generate image from this prompt")
+                }
             }
             Text(prompt.body)
                 .font(.system(size: 12, design: .monospaced))
@@ -155,7 +166,25 @@ struct PromptLibraryView: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .swipeActions(edge: .leading) {
+            if onGenerate != nil {
+                Button {
+                    onGenerate?(prompt)
+                } label: {
+                    Label("Generate", systemImage: "wand.and.stars")
+                }
+                .tint(Color.appAccent)
+            }
+        }
         .contextMenu {
+            if onGenerate != nil {
+                Button {
+                    onGenerate?(prompt)
+                } label: {
+                    Label("Generate Image", systemImage: "wand.and.stars")
+                }
+                Divider()
+            }
             Button("Edit") { viewModel.startEdit(prompt) }
             Divider()
             Button("Delete", role: .destructive) {

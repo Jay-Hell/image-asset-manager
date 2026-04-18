@@ -63,6 +63,16 @@ struct SourcePanelView: View {
                     }
                 }
             }
+
+            Section("View Options") {
+                Toggle(isOn: $viewModel.showHidden) {
+                    Label("Show Hidden", systemImage: "eye.slash")
+                }
+                .toggleStyle(.switch)
+                .onChange(of: viewModel.showHidden) { _, _ in
+                    Task { await viewModel.loadAssets() }
+                }
+            }
         }
         .listStyle(.sidebar)
         .onChange(of: viewModel.sourceSelection) { _, _ in

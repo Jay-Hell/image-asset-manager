@@ -79,8 +79,14 @@ struct ContentView: View {
                     .overlay { ProgressView().tint(Color.appAccent) }
             }
         }
-        .task {
-            guard libraryVM == nil else { return }
+        // Re-initialise all VMs when the library URL changes (after a location migration)
+        .task(id: env.libraryURL.absoluteString) {
+            libraryVM = nil
+            generationVM = nil
+            promptVM = nil
+            exportVM = nil
+            spendVM = nil
+
             await ProviderRegistry.shared.register(NanaBananaProvider())
 
             let newGenVM = GenerationViewModel(database: env.database, libraryURL: env.libraryURL)
@@ -116,7 +122,14 @@ struct ContentView: View {
                 }
             )
         case .prompts:
-            PromptLibraryView(viewModel: promptVM)
+            PromptLibraryView(
+                viewModel: promptVM,
+                onGenerate: { prompt in
+                    generationVM.prePopulate(from: prompt)
+                    activeTab = .library
+                    showGenerationSheet = true
+                }
+            )
         case .spend:
             SpendDashboardView(viewModel: spendVM)
         }
