@@ -33,6 +33,7 @@ struct ImageAssetManagerApp: App {
         #if os(macOS)
         Settings {
             SettingsView()
+                .environment(env)
         }
         #endif
     }
