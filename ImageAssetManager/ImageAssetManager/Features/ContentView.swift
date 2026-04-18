@@ -79,8 +79,8 @@ struct ContentView: View {
                     .overlay { ProgressView().tint(Color.appAccent) }
             }
         }
-        // Re-initialise all VMs when the library URL changes (after a location migration)
-        .task(id: env.libraryURL.absoluteString) {
+        // Re-initialise all VMs when the library URL changes or the library is cleared.
+        .task(id: "\(env.libraryURL.absoluteString)|\(env.libraryRevision)") {
             libraryVM = nil
             generationVM = nil
             promptVM = nil

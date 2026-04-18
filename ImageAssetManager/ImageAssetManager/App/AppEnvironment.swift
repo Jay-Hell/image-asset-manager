@@ -5,6 +5,7 @@ import ImageAssetManagerCore
 final class AppEnvironment {
     var database: AppDatabase
     var libraryURL: URL
+    private(set) var libraryRevision: Int = 0
 
     private static let bookmarkKey = "libraryLocationBookmark"
 
@@ -41,6 +42,28 @@ final class AppEnvironment {
 
         database = newDB
         libraryURL = destinationURL
+    }
+
+    // MARK: - Library clear
+
+    func clearLibrary(deleteFiles: Bool) async throws {
+        try await database.clearAllData()
+
+        if deleteFiles {
+            let fm = FileManager.default
+            for folder in ["assets", "prompts"] {
+                let folderURL = libraryURL.appending(path: folder)
+                guard fm.fileExists(atPath: folderURL.path(percentEncoded: false)) else { continue }
+                try fm.removeItem(at: folderURL)
+                try fm.createDirectory(at: folderURL, withIntermediateDirectories: true)
+            }
+        }
+
+        // Reset the export index to an empty library.
+        let indexURL = libraryURL.appending(path: "index.json")
+        try Data("[]".utf8).write(to: indexURL, options: .atomic)
+
+        libraryRevision += 1
     }
 
     // MARK: - Bookmark helpers

@@ -18,6 +18,9 @@ struct SettingsView: View {
     @State private var migrationDestination: MigrationDestination?
     @State private var migrationError: String?
     @State private var isMigrating: Bool = false
+    @State private var showClearLibraryConfirmation: Bool = false
+    @State private var isClearing: Bool = false
+    @State private var clearError: String?
 
     private let service = "com.yourapp.imageassetmanager"
     private let account = "anthropic_api_key"
@@ -88,6 +91,28 @@ struct SettingsView: View {
             } header: {
                 Text("Library Location")
             }
+
+            // MARK: Clear Library
+            Section {
+                Text("Removes all assets, projects, collections, prompts, variants, and tags. Provider configuration and export presets are preserved.")
+                    .font(.caption)
+                    .foregroundStyle(Color.appTextSecondary)
+
+                if isClearing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Clearing library…")
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+                } else {
+                    Button("Clear Library…", role: .destructive) {
+                        showClearLibraryConfirmation = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } header: {
+                Text("Danger Zone")
+            }
         }
         #if os(macOS)
         .formStyle(.grouped)
@@ -128,6 +153,29 @@ struct SettingsView: View {
         } message: {
             Text(migrationError ?? "")
         }
+        .confirmationDialog(
+            "Clear Library?",
+            isPresented: $showClearLibraryConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Records and Delete Files", role: .destructive) {
+                performClearLibrary(deleteFiles: true)
+            }
+            Button("Clear Records Only", role: .destructive) {
+                performClearLibrary(deleteFiles: false)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently remove all assets, projects, collections, prompts, variants, and tags from the library. This cannot be undone.")
+        }
+        .alert("Clear Failed", isPresented: .init(
+            get: { clearError != nil },
+            set: { if !$0 { clearError = nil } }
+        )) {
+            Button("OK") { clearError = nil }
+        } message: {
+            Text(clearError ?? "")
+        }
     }
 
     // MARK: - Keychain
@@ -156,6 +204,20 @@ struct SettingsView: View {
         isKeyStored = false
         apiKey = ""
         saveMessage = nil
+    }
+
+    // MARK: - Clear library
+
+    private func performClearLibrary(deleteFiles: Bool) {
+        Task {
+            isClearing = true
+            do {
+                try await env.clearLibrary(deleteFiles: deleteFiles)
+            } catch {
+                clearError = error.localizedDescription
+            }
+            isClearing = false
+        }
     }
 
     // MARK: - Folder picker

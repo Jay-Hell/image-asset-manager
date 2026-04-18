@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Image Asset Manager** — A macOS-primary / iPad-companion SwiftUI app for AI image generation, asset management, and consulting workflow integration. Integrates with iCloud Drive for storage, Obsidian for vault sync, and exposes a local MCP server for Claude Code. iPhone is explicitly out of scope for v1.
 
-Full specification: Obsidian vault → `Asset Management Tool/Asset Management Tool - Specification v0.4`
+Full specification: `/Users/johnlivingston/IonicConsulting/Asset Management Tool/Asset Management Tool - Specification v0.5.md` (working revision). Previous milestone: `v0.4.md`.
 
 ## Repository Layout
 
