@@ -182,7 +182,7 @@ final class LibraryViewModel {
         let dateStr: String = {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = "yyyy-MMM-dd"
+            f.dateFormat = "yyyy-MM-dd"
             return f.string(from: Date())
         }()
 

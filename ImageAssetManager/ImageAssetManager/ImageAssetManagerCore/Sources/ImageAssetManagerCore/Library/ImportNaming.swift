@@ -2,7 +2,7 @@ import Foundation
 
 public enum ImportNaming: String, CaseIterable, Sendable {
     case preserveOriginal = "Original Name"
-    case appendDate       = "Append Date"
+    case prependDate      = "Prepend Date"
     case dateAndIndex     = "Date + Index"
 }
 
@@ -27,9 +27,9 @@ extension ImportNaming {
             let stem = originalURL.deletingPathExtension().lastPathComponent
             return allocate(base: stem, ext: ext, usedFilenames: &usedFilenames)
 
-        case .appendDate:
+        case .prependDate:
             let stem = originalURL.deletingPathExtension().lastPathComponent
-            return allocate(base: "\(stem)_\(dateStr)", ext: ext, usedFilenames: &usedFilenames)
+            return allocate(base: "\(dateStr)_\(stem)", ext: ext, usedFilenames: &usedFilenames)
 
         case .dateAndIndex:
             var idx = batchIndex

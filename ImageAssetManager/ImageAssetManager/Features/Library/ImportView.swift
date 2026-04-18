@@ -156,8 +156,8 @@ struct ImportView: View {
     private var namingCaption: String {
         switch viewModel.importNaming {
         case .preserveOriginal: "Files keep their original names, e.g. photo.png"
-        case .appendDate:       "Date appended to the original name, e.g. photo_2026-Apr-18.png"
-        case .dateAndIndex:     "Files renamed to date and sequence, e.g. 2026-Apr-18_001.png"
+        case .prependDate:      "Date prepended to the original name, e.g. 2026-04-18_photo.png"
+        case .dateAndIndex:     "Files renamed to date and sequence, e.g. 2026-04-18_001.png"
         }
     }
 
