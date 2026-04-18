@@ -15,14 +15,16 @@ image-asset-manager/
   ImageAssetManager/
     ImageAssetManager.xcodeproj/        ← Xcode project
     ImageAssetManager/                  ← Universal app target (macOS + iPadOS)
-      App/                              ← Entry point, AppDelegate (#if os(macOS))
-      Features/                         ← Generation, Library, Prompts, Collections,
-                                          Variants, Spend, Refinement
+      App/                              ← ImageAssetManagerApp, AppEnvironment,
+                                          MCPServer (Swift NWListener, macOS only)
+      Features/                         ← Generation, Library, Prompts, Export,
+                                          Spend, Settings, ContentView
       Shared/                           ← Components, Extensions, Theme
       Resources/                        ← Assets.xcassets
       ImageAssetManagerCore/            ← Embedded Swift package (NOT in a top-level Packages/)
         Sources/ImageAssetManagerCore/
-          Database/                     ← AppDatabase (GRDB), LibrarySetup, migrations
+          Database/                     ← AppDatabase + per-feature query extensions,
+                                          LibrarySetup, migrations
           Providers/                    ← ImageProvider protocol, NanaBananaProvider,
                                           ProviderRegistry, ProviderError
           Models/                       ← Swift model types (GRDB-conformant)
@@ -30,6 +32,8 @@ image-asset-manager/
           Security/                     ← KeychainService
         Tests/ImageAssetManagerCoreTests/
     ImageAssetManagerTests/             ← App-level tests
+  mcp-server/                           ← Node.js MCP proxy (repo root, not in Xcode project)
+    src/                                ← index.js, appClient.js, fallback.js, tools.js
 ```
 
 ## Architecture
@@ -37,15 +41,25 @@ image-asset-manager/
 ### Layer Responsibilities
 
 - **ImageAssetManagerCore** — all business logic, data access (GRDB), provider abstraction, API clients. No SwiftUI imports. Swift 6 language mode; use `Sendable`, actors, and `async/await` throughout.
-- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic.
-- **MCP server** — runs on localhost:47821 when macOS app is open; exposes read/write tools over the SQLite library. Falls back to `index.json` when app is closed.
+- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene.
+- **MCP server** — two-tier setup:
+  - **Swift HTTP server** (`App/MCPServer.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Holds direct `AppDatabase` access via `AppDatabase+MCPQueries.swift`.
+  - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools return an error.
 
-### Storage (iCloud Drive — not CloudKit)
+### Storage
+
+Library location is **user-configurable** as of Phase 11. `AppEnvironment.resolveLibraryURL()` resolves in this order:
+1. Security-scoped bookmark persisted in `UserDefaults` (`libraryLocationBookmark`).
+2. Non-sandbox URL string fallback.
+3. Default iCloud container: `iCloud.Ionic.ImageAssetManager` → `Documents/`.
+4. Final fallback: `~/Library/Application Support/ImageAssetManager/`.
+
+Layout inside the container (created by `LibrarySetup.initialise(at:)`):
 
 ```
-~/Library/Mobile Documents/iCloud~com~[org]~ImageAssetManager/Documents/
+<library-root>/
   assets/          ← original image files ({uuid}.png/jpg/webp)
-  library.db       ← SQLite via GRDB
+  library.db       ← SQLite via GRDB (WAL journal mode)
   index.json       ← atomic full-library export; written after every DB write
   providers.json   ← provider config + cost models (no secrets)
   prompts/         ← prompt library markdown files ({uuid}.md)
@@ -55,7 +69,23 @@ API keys are stored in Keychain only — never in iCloud, providers.json, or cod
 
 ### Database
 
-`AppDatabase` is a `final class: Sendable` wrapping GRDB's `DatabaseQueue`. Schema is managed via `DatabaseMigrator` (currently one migration: `v1_initial_schema`). Add future schema changes as new named migrations — never modify `v1_initial_schema`.
+`AppDatabase` (`Database/AppDatabase.swift`) is a `final class: Sendable` wrapping GRDB's `DatabaseQueue` in WAL mode. Schema is managed via `DatabaseMigrator`; migrations are **append-only** — never edit an existing one. Current migrations:
+
+- `v1_initial_schema`
+- `v2_export_presets`
+- `v3_asset_hidden_column`
+
+Query logic is split by feature into extension files — add new queries in the matching extension rather than the core file:
+
+- `AppDatabase+Queries.swift` — general-purpose asset/project/collection CRUD
+- `AppDatabase+LibraryQueries.swift` — library browser lookups
+- `AppDatabase+PromptQueries.swift` — prompt library
+- `AppDatabase+ExportQueries.swift` — export presets
+- `AppDatabase+SpendQueries.swift` — spend dashboard aggregates
+- `AppDatabase+RefinementQueries.swift` — Claude prompt refinement history
+- `AppDatabase+MCPQueries.swift` — shapes reads for the MCP server
+
+`AppDatabase.checkpoint()` flushes the WAL into the main `.db` file and **must be called before moving or copying the library** (see `AppEnvironment.changeLibraryLocation`). It uses `barrierWriteWithoutTransaction` so it can't run inside a transaction.
 
 `IndexExporter.export(from:to:assetsBaseURL:)` is the single call site for writing `index.json`. It writes atomically via a `.tmp` file + `FileManager.replaceItemAt`. Call it after every DB write.
 
@@ -110,12 +140,12 @@ Images are always displayed against `Color.imageMatte` — never on white or col
 
 ### Keychain Identifiers
 
-Service name: `com.yourapp.imageassetmanager`
+Two service names are currently in use in the codebase — this is drift, not by design. Unify to one (`com.Ionic.ImageAssetManager`) when making the next change that touches either call site.
 
-| Key | Account |
-|---|---|
-| Nano Banana API key | `nano_banana_api_key` |
-| Anthropic API key | `anthropic_api_key` |
+| Key | Service (as used today) | Account |
+|---|---|---|
+| Nano Banana API key | `com.Ionic.ImageAssetManager` (`NanaBananaProvider.keychainService`) | `nano_banana_api_key` |
+| Anthropic API key | `com.yourapp.imageassetmanager` (`SettingsView.service`) | `anthropic_api_key` |
 
 ### Technology Stack
 
@@ -128,7 +158,7 @@ Service name: `com.yourapp.imageassetmanager`
 | iCloud Sync | iCloud Drive via FileManager |
 | Charts | Swift Charts (macOS only in v1) |
 | Image Processing | Core Graphics |
-| MCP Server | Swift MCP SDK or lightweight Node.js (macOS only) |
+| MCP Server | Swift `NWListener` HTTP server (macOS only) + Node.js proxy (`mcp-server/`) |
 | Provider API | URLSession async/await |
 | Anthropic API | URLSession async/await (prompt refinement) |
 | Testing | Swift Testing (`@Test`, `#expect`) |
@@ -153,24 +183,7 @@ swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerC
   --filter TestSuiteName/testMethodName
 ```
 
-## Build Phases
-
-| Phase | Branch | Status | Objective |
-|-------|--------|--------|-----------|
-| 0 | `develop` | ✓ Done | Xcode project scaffold, iCloud entitlement, GRDB, full schema, IndexExporter, ImageProvider protocol, NanaBananaProvider |
-| 1 | `feature/phase-1-foundation` | — | (merged into Phase 0 on develop) |
-| 2 | `feature/phase-2-nano-banana` | — | (merged into Phase 0 on develop) |
-| 3 | `feature/phase-3-generation-panel` | Next | Generation Panel UI (macOS + iPad) |
-| 4 | `feature/phase-4-library-browser` | — | Library browser, collections, Inspector panel |
-| 5 | `feature/phase-5-prompt-library` | — | Prompt library with vault markdown mirror |
-| 6 | `feature/phase-6-export-presets` | — | Export presets (Core Graphics resize, no library pollution) |
-| 7 | `feature/phase-7-spend-dashboard` | — | Spend dashboard (Swift Charts on macOS, read-only on iPad) |
-| 8 | `feature/phase-8-mcp-server` | — | Local MCP server on localhost:47821 |
-| 9 | `feature/phase-9-visual-polish` | — | Aperture/Lightroom quality bar, accessibility |
-| 10 | `feature/phase-10-prompt-refinement` | — | Claude Prompt Refinement Assistant (Anthropic API, saved history) |
-| 11 | `feature/phase-11-library-refinements` | — | Configurable library location, import move/copy, multi-select hide/delete, generate from prompt |
-
-### Branching Strategy
+## Branching Strategy
 
 - `main` — tagged releases only
 - `develop` — integration branch; all phases merge here first
@@ -184,20 +197,22 @@ git checkout develop && git checkout -b feature/phase-N-description
 git checkout develop && git merge feature/phase-N-description
 ```
 
-## MCP Server Config (add to Claude Code settings after Phase 8)
+## MCP Server Config
 
-Replace `[org]` with the actual reverse-DNS org segment used in the iCloud container ID.
+Register the Node.js proxy in Claude Code (point `command`/`args` at the local checkout; see `mcp-server/README.md` for the full walkthrough):
 
 ```json
 {
   "mcpServers": {
     "image-asset-manager": {
-      "command": "npx",
-      "args": ["image-asset-manager-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/Image-asset-manager/mcp-server/src/index.js"],
       "env": {
-        "LIBRARY_PATH": "~/Library/Mobile Documents/iCloud~com~[org]~ImageAssetManager/Documents"
+        "LIBRARY_PATH": "~/Library/Mobile Documents/iCloud~Ionic~ImageAssetManager/Documents"
       }
     }
   }
 }
 ```
+
+`LIBRARY_PATH` is only used in offline fallback mode (reads `index.json` directly). When the macOS app is running, every tool call is forwarded to `http://127.0.0.1:47821` regardless of `LIBRARY_PATH`. Smoke test with `curl http://localhost:47821/health` → `{"status":"ok"}`.
