@@ -57,6 +57,10 @@ final class LibraryViewModel {
         let raw = UserDefaults.standard.string(forKey: "importMode") ?? ImportMode.copy.rawValue
         return ImportMode(rawValue: raw) ?? .copy
     }()
+    var importNaming: ImportNaming = {
+        let raw = UserDefaults.standard.string(forKey: "importNaming") ?? ImportNaming.preserveOriginal.rawValue
+        return ImportNaming(rawValue: raw) ?? .preserveOriginal
+    }()
     var isImporting: Bool = false
 
     var isLoading: Bool = false
@@ -163,22 +167,45 @@ final class LibraryViewModel {
         projectID: String?,
         collectionID: String?,
         tagNames: [String],
-        mode: ImportMode
+        mode: ImportMode,
+        naming: ImportNaming
     ) async throws {
         isImporting = true
         defer { isImporting = false }
 
         UserDefaults.standard.set(mode.rawValue, forKey: "importMode")
+        UserDefaults.standard.set(naming.rawValue, forKey: "importNaming")
 
         let assetsDir = libraryURL.appending(path: "assets")
         let now = ISO8601DateFormatter().string(from: Date())
+
+        let dateStr: String = {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyy-MMM-dd"
+            return f.string(from: Date())
+        }()
+
+        // Pre-populate used names with whatever is already in the assets folder.
+        var usedFilenames: Set<String> = Set(
+            (try? FileManager.default.contentsOfDirectory(atPath: assetsDir.path(percentEncoded: false))) ?? []
+        )
+
+        var batchIndex = 0
 
         for url in urls {
             let ext = url.pathExtension.lowercased()
             guard ["png", "jpg", "jpeg", "webp", "heic"].contains(ext) else { continue }
 
+            batchIndex += 1
             let assetID = UUID().uuidString
-            let filename = "\(assetID).\(ext)"
+            let filename = naming.filename(
+                for: url,
+                ext: ext,
+                dateStr: dateStr,
+                batchIndex: batchIndex,
+                usedFilenames: &usedFilenames
+            )
             let destURL = assetsDir.appending(path: filename)
 
             switch mode {

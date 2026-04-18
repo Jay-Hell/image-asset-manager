@@ -32,6 +32,16 @@ struct ImportView: View {
                              : "Copy keeps the original in place.")
                             .font(.caption)
                             .foregroundStyle(Color.appTextSecondary)
+
+                        Picker("File Naming", selection: $viewModel.importNaming) {
+                            ForEach(ImportNaming.allCases, id: \.self) { n in
+                                Text(n.rawValue).tag(n)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(namingCaption)
+                            .font(.caption)
+                            .foregroundStyle(Color.appTextSecondary)
                     }
 
                     Picker("Project", selection: $viewModel.importProjectID) {
@@ -143,19 +153,29 @@ struct ImportView: View {
         }
     }
 
+    private var namingCaption: String {
+        switch viewModel.importNaming {
+        case .preserveOriginal: "Files keep their original names, e.g. photo.png"
+        case .appendDate:       "Date appended to the original name, e.g. photo_2026-Apr-18.png"
+        case .dateAndIndex:     "Files renamed to date and sequence, e.g. 2026-Apr-18_001.png"
+        }
+    }
+
     private func performImport() {
         let tagNames = viewModel.importTags
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         let mode = viewModel.importMode
+        let naming = viewModel.importNaming
         Task {
             try? await viewModel.importAssets(
                 urls: viewModel.importURLs,
                 projectID: viewModel.importProjectID,
                 collectionID: viewModel.importCollectionID,
                 tagNames: tagNames,
-                mode: mode
+                mode: mode,
+                naming: naming
             )
             viewModel.importURLs = []
             viewModel.importTags = ""
