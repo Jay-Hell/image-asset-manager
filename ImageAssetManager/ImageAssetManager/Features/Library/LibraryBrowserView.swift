@@ -9,7 +9,7 @@ struct LibraryBrowserView: View {
 
     var body: some View {
         NavigationSplitView {
-            SourcePanelView(viewModel: viewModel)
+            SourcePanelView(viewModel: viewModel, onGenerate: onGenerate)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } content: {
             AssetGridView(viewModel: viewModel, onGenerate: onGenerate)

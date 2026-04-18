@@ -78,14 +78,6 @@ struct AssetGridView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: onGenerate) {
-                        Label("Generate", systemImage: "wand.and.stars")
-                    }
-                    .keyboardShortcut("g", modifiers: .command)
-                    .help("Open Generation Panel (⌘G)")
-                    .accessibilityLabel("Open generation panel")
-                }
-                ToolbarItem(placement: .primaryAction) {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             if viewModel.isSelectMode {

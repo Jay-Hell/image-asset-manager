@@ -3,6 +3,7 @@ import ImageAssetManagerCore
 
 struct SourcePanelView: View {
     @Bindable var viewModel: LibraryViewModel
+    var onGenerate: () -> Void
 
     var body: some View {
         List(selection: $viewModel.sourceSelection) {
@@ -80,11 +81,19 @@ struct SourcePanelView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button(action: onGenerate) {
+                    Label("Generate", systemImage: "wand.and.stars")
+                }
+                .keyboardShortcut("g", modifiers: .command)
+                .help("Open Generation Panel (⌘G)")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     viewModel.showImportSheet = true
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
+                .keyboardShortcut("i", modifiers: .command)
                 .help("Import images (⌘I)")
             }
         }
