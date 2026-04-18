@@ -61,14 +61,14 @@ struct LibraryMigrationSheetView: View {
             }
             .padding()
             .navigationTitle("Change Library Location")
-            #if os(macOS)
-            .frame(width: 420, height: 340)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
         }
+        #if os(macOS)
+        .frame(width: 440, height: 360)
+        #endif
     }
 }

@@ -1,6 +1,12 @@
 import SwiftUI
 import ImageAssetManagerCore
 
+/// Identifiable wrapper so we can use .sheet(item:) and guarantee non-nil URL in the sheet body.
+private struct MigrationDestination: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct SettingsView: View {
     @Environment(AppEnvironment.self) private var env
 
@@ -9,8 +15,7 @@ struct SettingsView: View {
     @State private var saveMessage: String?
     @State private var saveError: String?
     @State private var showClearConfirmation: Bool = false
-    @State private var showMigrationSheet: Bool = false
-    @State private var pendingDestinationURL: URL?
+    @State private var migrationDestination: MigrationDestination?
 
     private let service = "com.yourapp.imageassetmanager"
     private let account = "anthropic_api_key"
@@ -94,17 +99,14 @@ struct SettingsView: View {
         } message: {
             Text("The Anthropic API key will be removed from Keychain.")
         }
-        .sheet(isPresented: $showMigrationSheet) {
-            if let dest = pendingDestinationURL {
-                LibraryMigrationSheetView(
-                    destinationURL: dest,
-                    onConfirm: { mode in
-                        Task {
-                            try? await env.changeLibraryLocation(to: dest, mode: mode)
-                        }
-                    }
-                )
-            }
+        .sheet(item: $migrationDestination) { destination in
+            LibraryMigrationSheetView(
+                destinationURL: destination.url,
+                onConfirm: { mode in
+                    let url = destination.url
+                    Task { try? await env.changeLibraryLocation(to: url, mode: mode) }
+                }
+            )
         }
     }
 
@@ -147,8 +149,7 @@ struct SettingsView: View {
         panel.prompt = "Choose Library Location"
         panel.message = "Select the folder where the library database and assets will be stored."
         if panel.runModal() == .OK, let url = panel.url {
-            pendingDestinationURL = url
-            showMigrationSheet = true
+            migrationDestination = MigrationDestination(url: url)
         }
         #endif
     }
