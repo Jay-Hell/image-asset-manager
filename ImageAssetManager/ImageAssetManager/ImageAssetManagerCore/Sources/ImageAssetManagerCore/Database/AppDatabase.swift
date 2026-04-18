@@ -195,9 +195,10 @@ public final class AppDatabase: Sendable {
     }
 
     /// Flush the WAL journal into the main database file so it is self-contained before a copy or move.
+    /// Must run outside a transaction — uses barrierWriteWithoutTransaction for this reason.
     public func checkpoint() async throws {
-        try await writer.write { db in
-            try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+        _ = try await writer.barrierWriteWithoutTransaction { db in
+            try db.checkpoint(.truncate)
         }
     }
 
