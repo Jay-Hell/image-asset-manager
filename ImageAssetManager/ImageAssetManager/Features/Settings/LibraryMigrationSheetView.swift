@@ -3,6 +3,7 @@ import ImageAssetManagerCore
 
 struct LibraryMigrationSheetView: View {
     let destinationURL: URL
+    var isMigrating: Bool = false
     var onConfirm: (MigrationMode) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -29,41 +30,49 @@ struct LibraryMigrationSheetView: View {
 
                 Spacer()
 
-                VStack(spacing: 10) {
-                    Button {
-                        onConfirm(.move)
-                        dismiss()
-                    } label: {
-                        Label("Move", systemImage: "arrow.right.square")
-                            .frame(maxWidth: .infinity)
+                if isMigrating {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Migrating library…")
+                            .foregroundStyle(Color.appTextSecondary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.appAccent)
-                    .controlSize(.large)
-                    .accessibilityHint("Moves all files to the new location and removes them from the current one")
+                    .frame(maxWidth: .infinity)
+                } else {
+                    VStack(spacing: 10) {
+                        Button {
+                            onConfirm(.move)
+                        } label: {
+                            Label("Move", systemImage: "arrow.right.square")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.appAccent)
+                        .controlSize(.large)
+                        .accessibilityHint("Moves all files to the new location and removes them from the current one")
 
-                    Button {
-                        onConfirm(.copy)
-                        dismiss()
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
+                        Button {
+                            onConfirm(.copy)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .accessibilityHint("Copies all files to the new location leaving originals in place")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .accessibilityHint("Copies all files to the new location leaving originals in place")
+
+                    Text("Move removes files from the current location. Copy duplicates them — you can delete the originals manually afterwards.")
+                        .font(.caption)
+                        .foregroundStyle(Color.appTextSecondary)
+                        .multilineTextAlignment(.center)
                 }
-
-                Text("Move removes files from the current location. Copy duplicates them — you can delete the originals manually afterwards.")
-                    .font(.caption)
-                    .foregroundStyle(Color.appTextSecondary)
-                    .multilineTextAlignment(.center)
             }
             .padding()
             .navigationTitle("Change Library Location")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(isMigrating)
                 }
             }
         }

@@ -7,17 +7,14 @@ public enum MigrationMode: String, Sendable {
 
 public enum MigrationError: Error, LocalizedError, Sendable {
     case sourceNotFound(String)
-    case destinationNotWritable(String)
     case itemFailed(String, String)
 
     public var errorDescription: String? {
         switch self {
         case .sourceNotFound(let path):
-            return "Source not found: \(path)"
-        case .destinationNotWritable(let path):
-            return "Cannot write to destination: \(path)"
+            return "Source library not found at: \(path)"
         case .itemFailed(let name, let message):
-            return "Failed to migrate \(name): \(message)"
+            return "Failed to migrate \"\(name)\": \(message)"
         }
     }
 }
@@ -26,6 +23,8 @@ public actor LibraryMigrationService {
 
     public init() {}
 
+    /// Migrate all library files from `sourceURL` to `destinationURL`.
+    /// Call `AppDatabase.checkpoint()` before invoking this to ensure the WAL is flushed.
     public func migrate(
         from sourceURL: URL,
         to destinationURL: URL,
@@ -33,22 +32,28 @@ public actor LibraryMigrationService {
     ) async throws {
         let fm = FileManager.default
         let sourcePath = sourceURL.path(percentEncoded: false)
-        let destPath = destinationURL.path(percentEncoded: false)
 
         guard fm.fileExists(atPath: sourcePath) else {
             throw MigrationError.sourceNotFound(sourcePath)
         }
-        guard fm.isWritableFile(atPath: destPath) else {
-            throw MigrationError.destinationNotWritable(destPath)
-        }
 
-        let items = ["library.db", "index.json", "assets", "prompts", "providers.json"]
+        // Core library files plus WAL sidecar files that SQLite creates in WAL mode.
+        let items = [
+            "library.db",
+            "library.db-shm",
+            "library.db-wal",
+            "index.json",
+            "providers.json",
+            "assets",
+            "prompts",
+        ]
 
         for item in items {
             let src = sourceURL.appending(path: item)
             guard fm.fileExists(atPath: src.path(percentEncoded: false)) else { continue }
             let dst = destinationURL.appending(path: item)
 
+            // Remove any existing item at the destination first.
             if fm.fileExists(atPath: dst.path(percentEncoded: false)) {
                 try fm.removeItem(at: dst)
             }

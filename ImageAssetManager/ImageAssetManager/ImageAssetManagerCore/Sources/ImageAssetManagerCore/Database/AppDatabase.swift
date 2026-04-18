@@ -194,6 +194,13 @@ public final class AppDatabase: Sendable {
         try migrator.migrate(writer)
     }
 
+    /// Flush the WAL journal into the main database file so it is self-contained before a copy or move.
+    public func checkpoint() async throws {
+        try await writer.write { db in
+            try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+        }
+    }
+
     public func read<T: Sendable>(
         _ block: @Sendable (Database) throws -> T
     ) async throws -> T {

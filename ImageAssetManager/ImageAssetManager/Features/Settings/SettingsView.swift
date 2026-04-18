@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var saveError: String?
     @State private var showClearConfirmation: Bool = false
     @State private var migrationDestination: MigrationDestination?
+    @State private var migrationError: String?
+    @State private var isMigrating: Bool = false
 
     private let service = "com.yourapp.imageassetmanager"
     private let account = "anthropic_api_key"
@@ -102,11 +104,29 @@ struct SettingsView: View {
         .sheet(item: $migrationDestination) { destination in
             LibraryMigrationSheetView(
                 destinationURL: destination.url,
+                isMigrating: isMigrating,
                 onConfirm: { mode in
                     let url = destination.url
-                    Task { try? await env.changeLibraryLocation(to: url, mode: mode) }
+                    Task {
+                        isMigrating = true
+                        do {
+                            try await env.changeLibraryLocation(to: url, mode: mode)
+                            migrationDestination = nil   // dismiss sheet
+                        } catch {
+                            migrationError = error.localizedDescription
+                        }
+                        isMigrating = false
+                    }
                 }
             )
+        }
+        .alert("Migration Failed", isPresented: .init(
+            get: { migrationError != nil },
+            set: { if !$0 { migrationError = nil } }
+        )) {
+            Button("OK") { migrationError = nil }
+        } message: {
+            Text(migrationError ?? "")
         }
     }
 

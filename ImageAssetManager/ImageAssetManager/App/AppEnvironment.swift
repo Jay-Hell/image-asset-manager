@@ -24,12 +24,18 @@ final class AppEnvironment {
     // MARK: - Library location change
 
     func changeLibraryLocation(to destinationURL: URL, mode: MigrationMode) async throws {
+        // Flush WAL into the main .db file so the copy/move is self-consistent.
+        try await database.checkpoint()
+
         let service = LibraryMigrationService()
         try await service.migrate(from: libraryURL, to: destinationURL, mode: mode)
 
         AppEnvironment.persistBookmark(for: destinationURL)
 
+        // Ensure the expected folder structure exists at the new location.
         try LibrarySetup.initialise(at: destinationURL)
+
+        // Open a new database connection at the new path; ARC releases the old one.
         let dbPath = destinationURL.appending(path: "library.db").path(percentEncoded: false)
         let newDB = try AppDatabase(path: dbPath)
 
