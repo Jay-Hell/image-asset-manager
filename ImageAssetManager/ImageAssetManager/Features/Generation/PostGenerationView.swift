@@ -70,12 +70,7 @@ struct PostGenerationView: View {
                 Divider().overlay(Color.appBorder)
 
                 formSection("Variant Family") {
-                    TextField("Family name (optional)", text: $viewModel.selectedVariantFamilyName)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.appTextPrimary)
-                        .padding(8)
-                        .background(Color.appSurfaceRaised, in: RoundedRectangle(cornerRadius: 6))
+                    variantFamilyPicker
                 }
 
                 Divider().overlay(Color.appBorder)
@@ -178,6 +173,40 @@ struct PostGenerationView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color.appSurfaceRaised, in: Capsule())
+    }
+
+    // MARK: - Variant Family Picker
+
+    /// TextField for free-form entry, plus a Menu of existing families scoped to the current
+    /// project (or orphan families when no project is selected). Leaving the field blank is
+    /// allowed — the ViewModel derives a default name from the prompt at confirm time.
+    private var variantFamilyPicker: some View {
+        HStack(spacing: 6) {
+            TextField("Family name (leave blank for default)", text: $viewModel.selectedVariantFamilyName)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(Color.appTextPrimary)
+                .padding(8)
+                .background(Color.appSurfaceRaised, in: RoundedRectangle(cornerRadius: 6))
+
+            if !viewModel.existingVariantFamilyNames.isEmpty {
+                Menu {
+                    ForEach(viewModel.existingVariantFamilyNames, id: \.self) { name in
+                        Button(name) { viewModel.selectedVariantFamilyName = name }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .padding(8)
+                        .background(Color.appSurfaceRaised, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Pick an existing family")
+            }
+        }
     }
 
     // MARK: - Collection Picker

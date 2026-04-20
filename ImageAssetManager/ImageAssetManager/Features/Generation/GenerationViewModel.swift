@@ -36,6 +36,9 @@ final class GenerationViewModel {
     var pendingTags: [String] = []
     var tagInputText: String = ""
     var selectedVariantFamilyName: String = ""
+    /// Names of existing variant families in the current project (or orphan families when
+    /// no project is selected). Populated alongside the project's other dependencies.
+    var existingVariantFamilyNames: [String] = []
     var saveToPromptLibrary: Bool = false
     var promptLibraryTitle: String = ""
     var pendingRefinement: PendingRefinement?
@@ -183,10 +186,12 @@ final class GenerationViewModel {
 
         async let collsResult = (try? database.fetchCollections(projectID: projectID)) ?? []
         async let refsResult = (try? database.fetchActiveReferenceEntries(projectID: projectID)) ?? []
+        async let famsResult = (try? database.fetchVariantFamilyNames(projectID: projectID)) ?? []
 
-        let (colls, refs) = await (collsResult, refsResult)
+        let (colls, refs, fams) = await (collsResult, refsResult, famsResult)
         collections = colls
         referenceEntries = refs
+        existingVariantFamilyNames = fams
         confirmedReferenceIDs = []
         if selectedCollectionID != nil,
            !colls.contains(where: { $0.id == selectedCollectionID }) {
@@ -303,14 +308,13 @@ final class GenerationViewModel {
             ))
         }
 
-        let vfName = selectedVariantFamilyName.trimmingCharacters(in: .whitespaces)
-        if !vfName.isEmpty, let projectID = selectedProjectID {
-            let variant = try await database.findOrCreateVariant(name: vfName, projectID: projectID)
-            let seq = try await database.variantMemberCount(variantID: variant.id)
-            try await database.insertVariantMember(
-                VariantMember(variantID: variant.id, assetID: assetID, sequence: seq + 1, isSelected: seq == 0)
-            )
-        }
+        try await database.attachToVariantFamily(
+            assetID: assetID,
+            projectID: selectedProjectID,
+            familyName: selectedVariantFamilyName,
+            prompt: promptText,
+            filename: asset.filename
+        )
 
         if saveToPromptLibrary {
             let title = promptLibraryTitle.trimmingCharacters(in: .whitespaces)

@@ -20,6 +20,7 @@ struct LibraryBrowserView: View {
                     InspectorPanelView(
                         detail: detail,
                         libraryURL: viewModel.libraryURL,
+                        allVariantFamilyNames: viewModel.allVariantFamilyNames,
                         onTagsChanged: { tagNames in
                             Task { try? await viewModel.updateAssetTags(assetID: detail.asset.id, tagNames: tagNames) }
                         },
@@ -30,6 +31,9 @@ struct LibraryBrowserView: View {
                         onExport: { onExport(detail.asset) },
                         onPromoteVariant: { memberID, variantID in
                             Task { await viewModel.promoteVariantMember(memberID: memberID, in: variantID) }
+                        },
+                        onVariantFamilyChanged: { newName in
+                            Task { try? await viewModel.updateAssetVariantFamily(assetID: detail.asset.id, familyName: newName) }
                         }
                     )
                 } else {

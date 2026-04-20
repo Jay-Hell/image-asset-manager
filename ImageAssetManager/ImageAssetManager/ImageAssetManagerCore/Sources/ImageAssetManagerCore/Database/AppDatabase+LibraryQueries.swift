@@ -52,6 +52,9 @@ extension AppDatabase {
         }
     }
 
+    /// Returns variant families with **more than one member**. Singleton families (one asset)
+    /// exist as structural bookkeeping so every asset belongs to a family, but they add noise
+    /// to the filmstrip and sidebar — callers only care about genuine groupings.
     public func fetchVariantFamilies(projectID: String? = nil) async throws -> [(Variant, [(VariantMember, Asset)])] {
         try await read { db in
             var variantReq = Variant.order(Column("created_at").desc)
@@ -64,19 +67,31 @@ extension AppDatabase {
                     .filter(Column("variant_id") == variant.id)
                     .order(Column("sequence"))
                     .fetchAll(db)
-                guard !members.isEmpty else { return nil }
+                guard members.count > 1 else { return nil }
                 let pairs: [(VariantMember, Asset)] = try members.compactMap { member in
                     guard let asset = try Asset.fetchOne(db, key: member.assetID) else { return nil }
                     return (member, asset)
                 }
-                return pairs.isEmpty ? nil : (variant, pairs)
+                return pairs.count > 1 ? (variant, pairs) : nil
             }
         }
     }
 
+    /// Asset IDs that belong to a variant family with **more than one member**.
+    /// These are the assets the grid hands off to the filmstrip row; they should be
+    /// excluded from the plain "standalone" grid. Singleton families (every asset has
+    /// one of these after the v4 backfill) are ignored here by design.
     public func fetchVariantMemberAssetIDs() async throws -> Set<String> {
         try await read { db in
-            Set(try VariantMember.fetchAll(db).map(\.assetID))
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT asset_id FROM variant_members
+                WHERE variant_id IN (
+                    SELECT variant_id FROM variant_members
+                    GROUP BY variant_id
+                    HAVING COUNT(*) > 1
+                )
+            """)
+            return Set(rows.map { $0["asset_id"] as String })
         }
     }
 }

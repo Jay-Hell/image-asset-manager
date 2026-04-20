@@ -153,15 +153,13 @@ public actor GenerationService {
             ))
         }
 
-        if let vfName = request.variantFamilyName?.trimmingCharacters(in: .whitespaces),
-           !vfName.isEmpty,
-           let projectID = request.projectID {
-            let variant = try await database.findOrCreateVariant(name: vfName, projectID: projectID)
-            let seq = try await database.variantMemberCount(variantID: variant.id)
-            try await database.insertVariantMember(
-                VariantMember(variantID: variant.id, assetID: assetID, sequence: seq + 1, isSelected: seq == 0)
-            )
-        }
+        try await database.attachToVariantFamily(
+            assetID: assetID,
+            projectID: request.projectID,
+            familyName: request.variantFamilyName,
+            prompt: request.prompt,
+            filename: filename
+        )
 
         let indexURL = libraryURL.appending(path: "index.json")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)

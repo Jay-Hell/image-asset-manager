@@ -101,6 +101,7 @@ All strategies dedupe via an in-flight `usedFilenames: Set<String>` passed by re
 - `v1_initial_schema`
 - `v2_export_presets`
 - `v3_asset_hidden_column`
+- `v4_variants_nullable_project_and_backfill` — makes `variants.project_id` nullable (orphan assets can now have families) and backfills a solo variant family for every existing asset. Enforces the invariant: **every asset belongs to a variant family of at least one member.** Live creation paths (in-app generation, MCP `generate_image`, import) all funnel through `AppDatabase.attachToVariantFamily(...)` which derives a default family name from the prompt (preferred) or filename when the caller passes no explicit name. `fetchVariantFamilies` filters to families with >1 member, so singletons are invisible bookkeeping — they surface only once a sibling is added.
 
 Query logic is split by feature into extension files — add new queries in the matching extension rather than the core file:
 

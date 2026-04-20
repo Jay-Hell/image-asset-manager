@@ -191,6 +191,49 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v4_variants_nullable_project_and_backfill") { db in
+            // 1. Rebuild `variants` with a nullable project_id (SQLite can't drop NOT NULL in-place).
+            try db.execute(sql: """
+                CREATE TABLE variants_new (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                    base_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            try db.execute(sql: """
+                INSERT INTO variants_new (id, name, project_id, base_asset_id, created_at)
+                SELECT id, name, project_id, base_asset_id, created_at FROM variants
+            """)
+            try db.execute(sql: "DROP TABLE variants")
+            try db.execute(sql: "ALTER TABLE variants_new RENAME TO variants")
+
+            // 2. Backfill: every asset not already in a variant gets a solo family.
+            let now = ISO8601DateFormatter().string(from: Date())
+            let orphanAssets = try Row.fetchAll(db, sql: """
+                SELECT id, project_id, filename, prompt FROM assets
+                WHERE id NOT IN (SELECT asset_id FROM variant_members)
+            """)
+            for row in orphanAssets {
+                let assetID: String = row["id"]
+                let projectID: String? = row["project_id"]
+                let filename: String = row["filename"]
+                let prompt: String? = row["prompt"]
+
+                let familyName = defaultVariantFamilyName(prompt: prompt, filename: filename)
+                let variantID = UUID().uuidString
+                try db.execute(
+                    sql: "INSERT INTO variants (id, name, project_id, base_asset_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [variantID, familyName, projectID, assetID, now]
+                )
+                try db.execute(
+                    sql: "INSERT INTO variant_members (id, variant_id, asset_id, sequence, is_selected) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [UUID().uuidString, variantID, assetID, 1, true]
+                )
+            }
+        }
+
         try migrator.migrate(writer)
     }
 
@@ -237,4 +280,17 @@ public final class AppDatabase: Sendable {
     ) async throws -> T {
         try await writer.write(block)
     }
+}
+
+/// Derive a default variant-family name from an asset's prompt (preferred) or filename.
+/// Used during the v4 backfill and by live generation/import flows so every asset ends up
+/// in a family of at least one member.
+public func defaultVariantFamilyName(prompt: String?, filename: String) -> String {
+    let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmedPrompt.isEmpty {
+        let condensed = trimmedPrompt.replacingOccurrences(of: "\n", with: " ")
+        return String(condensed.prefix(40)).trimmingCharacters(in: .whitespaces)
+    }
+    let base = (filename as NSString).deletingPathExtension
+    return base.isEmpty ? "Untitled" : base
 }

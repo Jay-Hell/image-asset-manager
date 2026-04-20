@@ -6,7 +6,7 @@ public struct Variant: Codable, FetchableRecord, PersistableRecord, Sendable {
 
     public var id: String
     public var name: String
-    public var projectID: String
+    public var projectID: String?
     public var baseAssetID: String?
     public var createdAt: String
 
@@ -20,7 +20,7 @@ public struct Variant: Codable, FetchableRecord, PersistableRecord, Sendable {
     public init(
         id: String = UUID().uuidString,
         name: String,
-        projectID: String,
+        projectID: String?,
         baseAssetID: String? = nil,
         createdAt: String
     ) {

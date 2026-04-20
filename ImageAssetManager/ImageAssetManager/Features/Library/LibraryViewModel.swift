@@ -26,6 +26,9 @@ final class LibraryViewModel {
     var allCollections: [ImageCollection] = []
     var tagsWithCounts: [(Tag, Int)] = []
     var variantFamilies: [(Variant, [(VariantMember, Asset)])] = []
+    /// Distinct family names across all projects (including singletons). Used by the
+    /// inspector's family picker so the user can move an asset into any existing family.
+    var allVariantFamilyNames: [String] = []
 
     // MARK: - Selection
     var sourceSelection: SourceSelection = .allAssets
@@ -80,12 +83,14 @@ final class LibraryViewModel {
         async let collsResult = (try? database.fetchAllCollections()) ?? []
         async let tagsResult = (try? database.fetchTagsWithCounts()) ?? []
         async let variantsResult = (try? database.fetchVariantFamilies()) ?? []
+        async let familyNamesResult = (try? database.fetchAllVariantFamilyNames()) ?? []
 
-        let (projs, colls, tags, variants) = await (projsResult, collsResult, tagsResult, variantsResult)
+        let (projs, colls, tags, variants, familyNames) = await (projsResult, collsResult, tagsResult, variantsResult, familyNamesResult)
         projects = projs
         allCollections = colls
         tagsWithCounts = tags.filter { $0.1 > 0 }
         variantFamilies = variants
+        allVariantFamilyNames = familyNames
     }
 
     func loadAssets() async {
@@ -234,6 +239,14 @@ final class LibraryViewModel {
                 let tag = try await database.findOrCreateTag(name: name)
                 try await database.attachTag(tagID: tag.id, assetID: assetID)
             }
+
+            try await database.attachToVariantFamily(
+                assetID: assetID,
+                projectID: projectID,
+                familyName: nil,
+                prompt: nil,
+                filename: filename
+            )
         }
 
         let indexURL = libraryURL.appending(path: "index.json")
@@ -295,6 +308,31 @@ final class LibraryViewModel {
         try? await database.promoteVariantMember(memberID: memberID, in: variantID)
         await loadSidebarData()
         await loadAssets()
+    }
+
+    /// Move an asset to the named variant family (creating the family if needed). Empty names
+    /// are rejected upstream — the invariant is every asset has at least one family membership.
+    func updateAssetVariantFamily(assetID: String, familyName: String) async throws {
+        let asset: Asset?
+        if let found = assets.first(where: { $0.id == assetID }) {
+            asset = found
+        } else {
+            asset = try? await database.fetchAsset(id: assetID)
+        }
+        guard let asset else { return }
+        _ = try await database.moveAssetToVariantFamily(
+            assetID: assetID,
+            newFamilyName: familyName,
+            projectID: asset.projectID
+        )
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if selectedAssetID == assetID {
+            await selectAsset(assetID)
+        }
     }
 
     func deleteAsset(_ assetID: String, fromDisk: Bool = true) async throws {

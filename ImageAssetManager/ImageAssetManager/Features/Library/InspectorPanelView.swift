@@ -4,14 +4,18 @@ import ImageAssetManagerCore
 struct InspectorPanelView: View {
     let detail: AssetDetail
     let libraryURL: URL
+    let allVariantFamilyNames: [String]
     var onTagsChanged: ([String]) -> Void
     var onDelete: (Bool) -> Void   // Bool: fromDisk
     var onRegenerate: () -> Void
     var onExport: () -> Void
     var onPromoteVariant: (String, String) -> Void
+    var onVariantFamilyChanged: (String) -> Void
 
     @State private var editingTags: Bool = false
     @State private var tagEditText: String = ""
+    @State private var editingFamily: Bool = false
+    @State private var familyEditText: String = ""
     @State private var showDeleteConfirmation: Bool = false
 
     private var fileURL: URL {
@@ -47,7 +51,7 @@ struct InspectorPanelView: View {
                         referencesSection
                     }
 
-                    if let (variant, members) = detail.variantContext, members.count > 1 {
+                    if let (variant, members) = detail.variantContext {
                         Divider()
                         variantSection(variant: variant, members: members)
                     }
@@ -212,37 +216,87 @@ struct InspectorPanelView: View {
 
     private func variantSection(variant: Variant, members: [(VariantMember, Asset)]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Variant Family: \(variant.name)")
-            ScrollView(.horizontal, showsIndicators: false) {
+            HStack {
+                sectionHeader("Variant Family")
+                Spacer()
+                Button(editingFamily ? "Done" : "Edit") {
+                    if editingFamily {
+                        let trimmed = familyEditText.trimmingCharacters(in: .whitespaces)
+                        if !trimmed.isEmpty, trimmed != variant.name {
+                            onVariantFamilyChanged(trimmed)
+                        }
+                    } else {
+                        familyEditText = variant.name
+                    }
+                    editingFamily.toggle()
+                }
+                .controlSize(.mini)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.appAccent)
+            }
+
+            if editingFamily {
                 HStack(spacing: 6) {
-                    ForEach(members, id: \.0.id) { member, asset in
-                        let isCurrentAsset = asset.id == detail.asset.id
-                        let thumbURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
+                    TextField("Family name", text: $familyEditText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13))
 
-                        ZStack(alignment: .bottomLeading) {
-                            LocalImage(url: thumbURL)
-                                .frame(width: 56, height: 56)
-                                .clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                            Text("\(member.sequence)")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 14, height: 14)
-                                .background(
-                                    member.isSelected ? Color.appAccent : Color.black.opacity(0.6),
-                                    in: Circle()
-                                )
-                                .padding(2)
-                        }
-                        .overlay {
-                            if isCurrentAsset {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .strokeBorder(Color.appAccent, lineWidth: 2)
+                    let otherFamilies = allVariantFamilyNames.filter { $0 != variant.name }
+                    if !otherFamilies.isEmpty {
+                        Menu {
+                            ForEach(otherFamilies, id: \.self) { name in
+                                Button(name) { familyEditText = name }
                             }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.appTextSecondary)
                         }
-                        .onTapGesture { onPromoteVariant(member.id, variant.id) }
-                        .help("Promote to selected")
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Pick an existing family")
+                    }
+                }
+            } else {
+                Text(variant.name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.appTextPrimary)
+                    .textSelection(.enabled)
+            }
+
+            if members.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(members, id: \.0.id) { member, asset in
+                            let isCurrentAsset = asset.id == detail.asset.id
+                            let thumbURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
+
+                            ZStack(alignment: .bottomLeading) {
+                                LocalImage(url: thumbURL)
+                                    .frame(width: 56, height: 56)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                                Text("\(member.sequence)")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 14, height: 14)
+                                    .background(
+                                        member.isSelected ? Color.appAccent : Color.black.opacity(0.6),
+                                        in: Circle()
+                                    )
+                                    .padding(2)
+                            }
+                            .overlay {
+                                if isCurrentAsset {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .strokeBorder(Color.appAccent, lineWidth: 2)
+                                }
+                            }
+                            .onTapGesture { onPromoteVariant(member.id, variant.id) }
+                            .help("Promote to selected")
+                        }
                     }
                 }
             }
