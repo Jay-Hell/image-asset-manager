@@ -12,6 +12,24 @@ struct SourcePanelView: View {
                     .tag(SourceSelection.allAssets)
             }
 
+            if !viewModel.clients.isEmpty {
+                Section("Clients") {
+                    ForEach(viewModel.clients, id: \.id) { client in
+                        let clientProjects = viewModel.projects.filter { $0.clientID == client.id }
+                        HStack {
+                            Label(client.name, systemImage: "person.crop.circle")
+                            Spacer()
+                            if !clientProjects.isEmpty {
+                                Text("\(clientProjects.count)")
+                                    .foregroundStyle(Color.appTextSecondary)
+                                    .font(.caption)
+                            }
+                        }
+                        .tag(SourceSelection.client(client.id))
+                    }
+                }
+            }
+
             if !viewModel.projects.isEmpty {
                 Section("Projects") {
                     ForEach(viewModel.projects, id: \.id) { project in

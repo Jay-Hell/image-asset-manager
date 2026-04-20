@@ -3,6 +3,7 @@ import ImageAssetManagerCore
 
 enum SourceSelection: Hashable {
     case allAssets
+    case client(String)
     case project(String)
     case collection(String)
     case tag(String)
@@ -12,6 +13,7 @@ enum SourceSelection: Hashable {
 struct AssetDetail {
     let asset: Asset
     let tags: [Tag]
+    let projects: [Project]
     let references: [(AssetReference, Asset?)]
     let variantContext: (Variant, [(VariantMember, Asset)])?
     let usage: [AssetUsage]
@@ -23,6 +25,7 @@ final class LibraryViewModel {
 
     // MARK: - Sidebar data
     var projects: [Project] = []
+    var clients: [Client] = []
     var allCollections: [ImageCollection] = []
     var tagsWithCounts: [(Tag, Int)] = []
     var variantFamilies: [(Variant, [(VariantMember, Asset)])] = []
@@ -80,13 +83,15 @@ final class LibraryViewModel {
 
     func loadSidebarData() async {
         async let projsResult = (try? database.fetchProjects()) ?? []
+        async let clientsResult = (try? database.fetchClients()) ?? []
         async let collsResult = (try? database.fetchAllCollections()) ?? []
         async let tagsResult = (try? database.fetchTagsWithCounts()) ?? []
         async let variantsResult = (try? database.fetchVariantFamilies()) ?? []
         async let familyNamesResult = (try? database.fetchAllVariantFamilyNames()) ?? []
 
-        let (projs, colls, tags, variants, familyNames) = await (projsResult, collsResult, tagsResult, variantsResult, familyNamesResult)
+        let (projs, cls, colls, tags, variants, familyNames) = await (projsResult, clientsResult, collsResult, tagsResult, variantsResult, familyNamesResult)
         projects = projs
+        clients = cls
         allCollections = colls
         tagsWithCounts = tags.filter { $0.1 > 0 }
         variantFamilies = variants
@@ -107,8 +112,13 @@ final class LibraryViewModel {
                 assets = try await database.searchAssets(searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = try await database.fetchVariantFamilies()
 
+            case .client(let cid):
+                let clientProjectIDs = projects.filter { $0.clientID == cid }.map(\.id)
+                assets = try await database.searchAssets(projectIDs: clientProjectIDs, searchText: searchArg, showHidden: capturedShowHidden)
+                displayedVariantFamilies = []
+
             case .project(let pid):
-                assets = try await database.searchAssets(projectID: pid, searchText: searchArg, showHidden: capturedShowHidden)
+                assets = try await database.searchAssets(projectIDs: [pid], searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = try await database.fetchVariantFamilies(projectID: pid)
 
             case .collection(let cid):
@@ -141,15 +151,17 @@ final class LibraryViewModel {
         guard let asset else { return }
 
         async let tagsResult = (try? database.fetchTagsForAsset(assetID: assetID)) ?? []
+        async let projectsResult = (try? database.fetchProjectsForAsset(assetID: assetID)) ?? []
         async let refsResult = (try? database.fetchReferencesForAsset(assetID: assetID)) ?? []
         async let variantResult = try? database.fetchVariantContext(assetID: assetID)
         async let usageResult = (try? database.fetchUsageForAsset(assetID: assetID)) ?? []
         async let refinementResult = try? database.fetchRefinement(forAsset: assetID)
 
-        let (tags, refs, variantCtx, usage, refinement) = await (tagsResult, refsResult, variantResult, usageResult, refinementResult)
+        let (tags, projs, refs, variantCtx, usage, refinement) = await (tagsResult, projectsResult, refsResult, variantResult, usageResult, refinementResult)
         inspectorDetail = AssetDetail(
             asset: asset,
             tags: tags,
+            projects: projs,
             references: refs,
             variantContext: variantCtx,
             usage: usage,
@@ -235,6 +247,10 @@ final class LibraryViewModel {
             )
             try await database.insertAsset(asset)
 
+            if let pid = projectID {
+                try await database.setProjectsForAsset(assetID: assetID, projectIDs: [pid])
+            }
+
             for name in tagNames {
                 let tag = try await database.findOrCreateTag(name: name)
                 try await database.attachTag(tagID: tag.id, assetID: assetID)
@@ -312,6 +328,19 @@ final class LibraryViewModel {
 
     /// Move an asset to the named variant family (creating the family if needed). Empty names
     /// are rejected upstream — the invariant is every asset has at least one family membership.
+    /// Replace an asset's project memberships. Pass an empty array to detach from all projects.
+    /// The first ID becomes the primary.
+    func setAssetProjects(assetID: String, projectIDs: [String]) async throws {
+        try await database.setProjectsForAsset(assetID: assetID, projectIDs: projectIDs)
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadAssets()
+        if selectedAssetID == assetID {
+            await selectAsset(assetID)
+        }
+    }
+
     func updateAssetVariantFamily(assetID: String, familyName: String) async throws {
         let asset: Asset?
         if let found = assets.first(where: { $0.id == assetID }) {

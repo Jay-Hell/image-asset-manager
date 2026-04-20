@@ -39,6 +39,12 @@ struct SettingsView: View {
                 removalMessage: "The Anthropic API key will be removed from Keychain."
             )
 
+            // MARK: Clients
+            ClientsSettingsSection()
+
+            // MARK: Projects
+            ProjectsSettingsSection()
+
             // MARK: Library Location
             Section {
                 VStack(alignment: .leading, spacing: 6) {

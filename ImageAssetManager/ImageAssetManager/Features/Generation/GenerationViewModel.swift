@@ -9,7 +9,17 @@ final class GenerationViewModel {
     var availableProviders: [any ImageProvider] = []
 
     // MARK: - Selection
+    /// Primary project: drives collections, active references, provider defaults.
+    /// The generated asset is additionally attached to every ID in `additionalProjectIDs`.
     var selectedProjectID: String?
+    var additionalProjectIDs: Set<String> = []
+    /// The full project set (primary + additional) the generated asset will belong to.
+    var allSelectedProjectIDs: [String] {
+        guard let primary = selectedProjectID else { return [] }
+        var rest = additionalProjectIDs
+        rest.remove(primary)
+        return [primary] + rest.sorted()
+    }
     var collections: [ImageCollection] = []
     var selectedCollectionID: String?
     var referenceEntries: [ReferenceEntry] = []
@@ -283,6 +293,11 @@ final class GenerationViewModel {
             createdAt: now
         )
         try await database.insertAsset(asset)
+
+        let projectIDs = allSelectedProjectIDs
+        if !projectIDs.isEmpty {
+            try await database.setProjectsForAsset(assetID: assetID, projectIDs: projectIDs)
+        }
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,

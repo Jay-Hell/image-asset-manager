@@ -3,8 +3,11 @@ import Foundation
 
 // MARK: - Asset search
 extension AppDatabase {
+    /// Filter assets by any combination of projects (union), collection, tag, variant family,
+    /// and full-text search. `projectIDs == nil` means "no project filter"; an empty array
+    /// filters to assets with zero project memberships.
     public func searchAssets(
-        projectID: String? = nil,
+        projectIDs: [String]? = nil,
         collectionID: String? = nil,
         tagID: String? = nil,
         variantFamilyID: String? = nil,
@@ -16,8 +19,12 @@ extension AppDatabase {
             if !showHidden {
                 request = request.filter(Column("is_hidden") == false)
             }
-            if let pid = projectID {
-                request = request.filter(Column("project_id") == pid)
+            if let pids = projectIDs {
+                if pids.isEmpty {
+                    request = request.filter(SQL("id NOT IN (SELECT asset_id FROM asset_projects)"))
+                } else {
+                    request = request.filter(SQL("id IN (SELECT asset_id FROM asset_projects WHERE project_id IN \(pids))"))
+                }
             }
             if let cid = collectionID {
                 request = request.filter(Column("collection_id") == cid)

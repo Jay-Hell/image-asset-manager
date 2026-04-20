@@ -88,10 +88,53 @@ struct GenerationPanelView: View {
 
     // MARK: - Project / Provider Header
 
+    private var additionalProjectsRow: some View {
+        let addable = viewModel.projects.filter {
+            $0.id != viewModel.selectedProjectID && !viewModel.additionalProjectIDs.contains($0.id)
+        }
+        return HStack(spacing: 4) {
+            ForEach(viewModel.projects.filter { viewModel.additionalProjectIDs.contains($0.id) }, id: \.id) { project in
+                HStack(spacing: 3) {
+                    Text(project.name).font(.caption)
+                    Button {
+                        viewModel.additionalProjectIDs.remove(project.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.appTextSecondary)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.appSurfaceRaised, in: Capsule())
+            }
+            if !addable.isEmpty {
+                Menu {
+                    ForEach(addable, id: \.id) { p in
+                        Button(p.name) { viewModel.additionalProjectIDs.insert(p.id) }
+                    }
+                } label: {
+                    Label("Add…", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.appAccent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.appSurfaceRaised, in: Capsule())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Also add to another project")
+            }
+        }
+    }
+
     private var projectProviderHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 12) {
-                // Project
+                // Project (primary + additional)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("PROJECT")
                         .font(.system(size: 10, weight: .medium))
@@ -107,6 +150,7 @@ struct GenerationPanelView: View {
                     .pickerStyle(.menu)
                     .tint(Color.appTextPrimary)
                     .font(.system(size: 13))
+                    additionalProjectsRow
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 

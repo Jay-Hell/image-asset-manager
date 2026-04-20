@@ -39,10 +39,15 @@ public actor GenerationService {
         public let width: Int
         public let height: Int
         public let references: [GenerationReference]
-        public let projectID: String?
+        /// Ordered list of project IDs the asset belongs to. The first entry becomes the
+        /// primary (mirrored into `assets.project_id`); subsequent entries add extra memberships.
+        /// Empty means no project membership.
+        public let projectIDs: [String]
         public let collectionID: String?
         public let tags: [String]
         public let variantFamilyName: String?
+
+        public var primaryProjectID: String? { projectIDs.first }
 
         public init(
             prompt: String,
@@ -52,7 +57,7 @@ public actor GenerationService {
             width: Int,
             height: Int,
             references: [GenerationReference] = [],
-            projectID: String? = nil,
+            projectIDs: [String] = [],
             collectionID: String? = nil,
             tags: [String] = [],
             variantFamilyName: String? = nil
@@ -64,7 +69,7 @@ public actor GenerationService {
             self.width = width
             self.height = height
             self.references = references
-            self.projectID = projectID
+            self.projectIDs = projectIDs
             self.collectionID = collectionID
             self.tags = tags
             self.variantFamilyName = variantFamilyName
@@ -114,7 +119,7 @@ public actor GenerationService {
             id: assetID,
             filename: filename,
             fileHash: result.data.sha256,
-            projectID: request.projectID,
+            projectID: request.primaryProjectID,
             collectionID: request.collectionID,
             providerID: provider.providerID,
             modelID: request.model.id,
@@ -128,6 +133,10 @@ public actor GenerationService {
             createdAt: now
         )
         try await database.insertAsset(asset)
+
+        if !request.projectIDs.isEmpty {
+            try await database.setProjectsForAsset(assetID: assetID, projectIDs: request.projectIDs)
+        }
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,
@@ -155,7 +164,7 @@ public actor GenerationService {
 
         try await database.attachToVariantFamily(
             assetID: assetID,
-            projectID: request.projectID,
+            projectID: request.primaryProjectID,
             familyName: request.variantFamilyName,
             prompt: request.prompt,
             filename: filename

@@ -18,10 +18,28 @@ public enum IndexExporter {
                 tagsByAsset[assetID, default: []].append(tagName)
             }
 
+            var projectIDsByAsset: [String: [String]] = [:]
+            var projectNamesByAsset: [String: [String]] = [:]
+            let projRows = try Row.fetchAll(db, sql: """
+                SELECT ap.asset_id, ap.project_id, p.name, ap.is_primary
+                FROM asset_projects ap
+                JOIN projects p ON p.id = ap.project_id
+                ORDER BY ap.is_primary DESC, p.name
+            """)
+            for row in projRows {
+                let assetID: String = row["asset_id"]
+                let projectID: String = row["project_id"]
+                let name: String = row["name"]
+                projectIDsByAsset[assetID, default: []].append(projectID)
+                projectNamesByAsset[assetID, default: []].append(name)
+            }
+
             return assets.map { asset in
                 IndexAssetRecord(
                     asset: asset,
                     tags: tagsByAsset[asset.id] ?? [],
+                    projectIDs: projectIDsByAsset[asset.id] ?? [],
+                    projectNames: projectNamesByAsset[asset.id] ?? [],
                     filePath: assetsBaseURL.appending(path: asset.filename).path(percentEncoded: false)
                 )
             }
@@ -41,7 +59,10 @@ struct IndexAssetRecord: Codable, Sendable {
     let id: String
     let filename: String
     let filePath: String
+    /// Primary project ID (legacy — preserved for pre-v6 consumers). Equal to projectIDs.first when present.
     let projectID: String?
+    let projectIDs: [String]
+    let projectNames: [String]
     let collectionID: String?
     let providerID: String
     let modelID: String
@@ -55,11 +76,13 @@ struct IndexAssetRecord: Codable, Sendable {
     let tags: [String]
     let obsidianEmbedded: Bool
 
-    init(asset: Asset, tags: [String], filePath: String) {
+    init(asset: Asset, tags: [String], projectIDs: [String], projectNames: [String], filePath: String) {
         self.id = asset.id
         self.filename = asset.filename
         self.filePath = filePath
-        self.projectID = asset.projectID
+        self.projectID = projectIDs.first ?? asset.projectID
+        self.projectIDs = projectIDs
+        self.projectNames = projectNames
         self.collectionID = asset.collectionID
         self.providerID = asset.providerID
         self.modelID = asset.modelID

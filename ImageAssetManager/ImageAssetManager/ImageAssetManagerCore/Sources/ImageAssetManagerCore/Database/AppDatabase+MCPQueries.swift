@@ -84,6 +84,7 @@ extension AppDatabase {
         query: String?,
         tags: [String]?,
         project: String?,
+        projects: [String]? = nil,
         collection: String?,
         provider: String?,
         aspectRatio: String?,
@@ -111,7 +112,15 @@ extension AppDatabase {
                 """)
             for t in tagList { mutableArgs += [t] }
         }
-        if let p = project   { conditions.append("p.name = ?");         mutableArgs += [p] }
+        // Merge singular `project` (shorthand) with `projects` (array). Any match counts.
+        var projectFilterNames: [String] = []
+        if let p = project, !p.isEmpty { projectFilterNames.append(p) }
+        if let ps = projects { projectFilterNames.append(contentsOf: ps.filter { !$0.isEmpty }) }
+        if !projectFilterNames.isEmpty {
+            let ph = projectFilterNames.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("a.id IN (SELECT ap.asset_id FROM asset_projects ap JOIN projects pj ON pj.id = ap.project_id WHERE pj.name IN (\(ph)))")
+            for name in projectFilterNames { mutableArgs += [name] }
+        }
         if let c = collection { conditions.append("col.name = ?");       mutableArgs += [c] }
         if let pv = provider  { conditions.append("a.provider_id = ?");  mutableArgs += [pv] }
         if let ar = aspectRatio { conditions.append("a.aspect_ratio = ?"); mutableArgs += [ar] }

@@ -234,6 +234,59 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v5_clients_table_and_project_client_id") { db in
+            try db.create(table: "clients") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull().unique()
+                t.column("created_at", .text).notNull()
+            }
+
+            try db.alter(table: "projects") { t in
+                t.add(column: "client_id", .text).references("clients", onDelete: .restrict)
+            }
+
+            let now = ISO8601DateFormatter().string(from: Date())
+            let distinctNames = try String.fetchAll(db, sql: """
+                SELECT DISTINCT client_name FROM projects
+                WHERE client_name IS NOT NULL AND TRIM(client_name) != ''
+            """)
+
+            var nameToID: [String: String] = [:]
+            for name in distinctNames {
+                let trimmed = name.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                let id = UUID().uuidString
+                try db.execute(
+                    sql: "INSERT INTO clients (id, name, created_at) VALUES (?, ?, ?)",
+                    arguments: [id, trimmed, now]
+                )
+                nameToID[trimmed] = id
+            }
+
+            for (name, id) in nameToID {
+                try db.execute(
+                    sql: "UPDATE projects SET client_id = ? WHERE TRIM(client_name) = ?",
+                    arguments: [id, name]
+                )
+            }
+        }
+
+        migrator.registerMigration("v6_asset_projects_join_and_backfill") { db in
+            try db.create(table: "asset_projects") { t in
+                t.column("asset_id", .text).notNull().references("assets", onDelete: .cascade)
+                t.column("project_id", .text).notNull().references("projects", onDelete: .cascade)
+                t.column("is_primary", .boolean).notNull().defaults(to: false)
+                t.primaryKey(["asset_id", "project_id"])
+            }
+            try db.create(index: "asset_projects_project_id", on: "asset_projects", columns: ["project_id"])
+
+            // Backfill: existing single project_id on assets becomes the primary membership.
+            try db.execute(sql: """
+                INSERT INTO asset_projects (asset_id, project_id, is_primary)
+                SELECT id, project_id, 1 FROM assets WHERE project_id IS NOT NULL
+            """)
+        }
+
         try migrator.migrate(writer)
     }
 

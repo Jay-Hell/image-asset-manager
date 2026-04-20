@@ -9,7 +9,8 @@ export const TOOLS = [
       properties: {
         query:        { type: 'string',  description: 'Full-text search across prompt and filename' },
         tags:         { type: 'array',   items: { type: 'string' }, description: 'Filter to assets that have ALL of these tags' },
-        project:      { type: 'string',  description: 'Filter by project name' },
+        project:      { type: 'string',  description: 'Filter by project name (shorthand — use `projects` for multiple)' },
+        projects:     { type: 'array',   items: { type: 'string' }, description: 'Filter to assets that belong to ANY of these projects (by name)' },
         collection:   { type: 'string',  description: 'Filter by collection name' },
         provider:     { type: 'string',  description: 'Filter by provider ID (e.g. "nano_banana")' },
         aspect_ratio: { type: 'string',  description: 'Filter by aspect ratio (e.g. "16:9")' },
@@ -155,7 +156,13 @@ export const TOOLS = [
         project: {
           type: 'string',
           description:
-            'Project name or UUID. When provided, the project\'s active reference set is loaded automatically, and the generated asset(s) are assigned to this project.',
+            'Project name or UUID (shorthand — use `projects` for multiple). When provided, the project\'s active reference set is loaded automatically, and the generated asset(s) are assigned to this project.',
+        },
+        projects: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Additional project names or UUIDs. The first entry — or `project` if set — becomes the primary; references/collection scoping follow the primary.',
         },
         collection: {
           type: 'string',

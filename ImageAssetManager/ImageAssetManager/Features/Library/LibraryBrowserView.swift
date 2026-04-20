@@ -21,6 +21,7 @@ struct LibraryBrowserView: View {
                         detail: detail,
                         libraryURL: viewModel.libraryURL,
                         allVariantFamilyNames: viewModel.allVariantFamilyNames,
+                        allProjects: viewModel.projects,
                         onTagsChanged: { tagNames in
                             Task { try? await viewModel.updateAssetTags(assetID: detail.asset.id, tagNames: tagNames) }
                         },
@@ -34,6 +35,9 @@ struct LibraryBrowserView: View {
                         },
                         onVariantFamilyChanged: { newName in
                             Task { try? await viewModel.updateAssetVariantFamily(assetID: detail.asset.id, familyName: newName) }
+                        },
+                        onProjectsChanged: { projectIDs in
+                            Task { try? await viewModel.setAssetProjects(assetID: detail.asset.id, projectIDs: projectIDs) }
                         }
                     )
                 } else {

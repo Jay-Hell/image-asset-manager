@@ -5,12 +5,14 @@ struct InspectorPanelView: View {
     let detail: AssetDetail
     let libraryURL: URL
     let allVariantFamilyNames: [String]
+    let allProjects: [Project]
     var onTagsChanged: ([String]) -> Void
     var onDelete: (Bool) -> Void   // Bool: fromDisk
     var onRegenerate: () -> Void
     var onExport: () -> Void
     var onPromoteVariant: (String, String) -> Void
     var onVariantFamilyChanged: (String) -> Void
+    var onProjectsChanged: ([String]) -> Void
 
     @State private var editingTags: Bool = false
     @State private var tagEditText: String = ""
@@ -36,6 +38,10 @@ struct InspectorPanelView: View {
                     actionBar
 
                     metadataSection
+
+                    Divider()
+
+                    projectsSection
 
                     Divider()
 
@@ -137,6 +143,66 @@ struct InspectorPanelView: View {
                     .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.appTextSecondary)
                     .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var projectsSection: some View {
+        let currentIDs = Set(detail.projects.map(\.id))
+        let addable = allProjects.filter { !currentIDs.contains($0.id) }
+
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Projects")
+
+            if detail.projects.isEmpty {
+                Text("Not assigned to any project")
+                    .font(.caption)
+                    .foregroundStyle(Color.appTextSecondary)
+            } else {
+                InspectorFlowLayout {
+                    ForEach(detail.projects, id: \.id) { project in
+                        HStack(spacing: 4) {
+                            Text(project.name)
+                                .font(.caption)
+                            Button {
+                                let newIDs = detail.projects.map(\.id).filter { $0 != project.id }
+                                onProjectsChanged(newIDs)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.appTextSecondary)
+                            .help("Remove from \(project.name)")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.appSurfaceRaised, in: Capsule())
+                        .foregroundStyle(Color.appTextPrimary)
+                    }
+                }
+            }
+
+            if !addable.isEmpty {
+                Menu {
+                    ForEach(addable, id: \.id) { project in
+                        Button(project.name) {
+                            let newIDs = detail.projects.map(\.id) + [project.id]
+                            onProjectsChanged(newIDs)
+                        }
+                    }
+                } label: {
+                    Label("Add Project…", systemImage: "plus")
+                        .font(.caption)
+                        .foregroundStyle(Color.appAccent)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            } else if allProjects.isEmpty {
+                Text("No projects yet. Add one in Settings → Projects.")
+                    .font(.caption)
+                    .foregroundStyle(Color.appTextSecondary)
             }
         }
     }

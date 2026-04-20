@@ -152,6 +152,7 @@ actor MCPServer {
                 query: args["query"] as? String,
                 tags: args["tags"] as? [String],
                 project: args["project"] as? String,
+                projects: args["projects"] as? [String],
                 collection: args["collection"] as? String,
                 provider: args["provider"] as? String,
                 aspectRatio: args["aspect_ratio"] as? String,

@@ -44,13 +44,27 @@ extension MCPServer {
         )
 
         // --- 4. Project / collection resolution -------------------------
-        let project: Project? = try await {
-            guard let raw = args["project"] as? String, !raw.isEmpty else { return nil }
+        // Accept either a singular "project" string (primary) or a "projects" array
+        // (first is primary). A mix is allowed — singular acts as the primary when
+        // "projects" is absent.
+        var resolvedProjects: [Project] = []
+        if let raw = args["project"] as? String, !raw.isEmpty {
             guard let p = try await database.findProject(idOrName: raw) else {
                 throw MCPGenerateError.notFound("project '\(raw)'")
             }
-            return p
-        }()
+            resolvedProjects.append(p)
+        }
+        if let rawList = args["projects"] as? [String] {
+            for raw in rawList where !raw.isEmpty {
+                guard let p = try await database.findProject(idOrName: raw) else {
+                    throw MCPGenerateError.notFound("project '\(raw)'")
+                }
+                if !resolvedProjects.contains(where: { $0.id == p.id }) {
+                    resolvedProjects.append(p)
+                }
+            }
+        }
+        let project: Project? = resolvedProjects.first
 
         let collection: ImageCollection? = try await {
             guard let raw = args["collection"] as? String, !raw.isEmpty else { return nil }
@@ -125,7 +139,7 @@ extension MCPServer {
                 width: width,
                 height: height,
                 references: references,
-                projectID: project?.id,
+                projectIDs: resolvedProjects.map(\.id),
                 collectionID: collection?.id,
                 tags: tags,
                 variantFamilyName: variantFamily

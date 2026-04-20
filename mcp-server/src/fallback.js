@@ -112,6 +112,16 @@ function searchAssets(assets, args) {
       args.tags.every(t => (a.tags || []).includes(t))
     );
   }
+  const projectFilters = [];
+  if (args.project) projectFilters.push(args.project);
+  if (Array.isArray(args.projects)) projectFilters.push(...args.projects);
+  if (projectFilters.length) {
+    results = results.filter(a => {
+      const ids = Array.isArray(a.projectIDs) ? a.projectIDs : (a.projectID ? [a.projectID] : []);
+      const names = Array.isArray(a.projectNames) ? a.projectNames : [];
+      return projectFilters.some(p => ids.includes(p) || names.includes(p));
+    });
+  }
   if (args.provider) {
     results = results.filter(a => a.providerID === args.provider);
   }
