@@ -89,58 +89,70 @@ struct GenerationPanelView: View {
     // MARK: - Project / Provider Header
 
     private var projectProviderHeader: some View {
-        HStack(spacing: 12) {
-            // Project
-            VStack(alignment: .leading, spacing: 3) {
-                Text("PROJECT")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.appTextSecondary)
-                    .kerning(0.5)
-                Picker("Project", selection: $viewModel.selectedProjectID) {
-                    Text("No Project").tag(nil as String?)
-                    ForEach(viewModel.projects, id: \.id) { project in
-                        Text(project.name).tag(project.id as String?)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                // Project
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PROJECT")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .kerning(0.5)
+                    Picker("Project", selection: $viewModel.selectedProjectID) {
+                        Text("No Project").tag(nil as String?)
+                        ForEach(viewModel.projects, id: \.id) { project in
+                            Text(project.name).tag(project.id as String?)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(Color.appTextPrimary)
+                    .font(.system(size: 13))
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(Color.appTextPrimary)
-                .font(.system(size: 13))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Provider
-            VStack(alignment: .leading, spacing: 3) {
-                Text("PROVIDER")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.appTextSecondary)
-                    .kerning(0.5)
-                Picker("Provider", selection: $viewModel.selectedProviderID) {
-                    ForEach(viewModel.availableProviders, id: \.providerID) { p in
-                        Text(p.displayName).tag(p.providerID as String?)
+                // Provider
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PROVIDER")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .kerning(0.5)
+                    Picker("Provider", selection: $viewModel.selectedProviderID) {
+                        ForEach(viewModel.availableProviders, id: \.providerID) { p in
+                            Text(p.displayName).tag(p.providerID as String?)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(Color.appTextPrimary)
+                    .font(.system(size: 13))
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(Color.appTextPrimary)
-                .font(.system(size: 13))
+
+                // Model
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MODEL")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .kerning(0.5)
+                    Picker("Model", selection: $viewModel.selectedModelID) {
+                        ForEach(viewModel.currentProvider?.availableModels ?? [], id: \.id) { model in
+                            Text(model.displayName).tag(model.id as String?)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .tint(Color.appTextPrimary)
+                    .font(.system(size: 13))
+                }
             }
 
-            // Model
-            VStack(alignment: .leading, spacing: 3) {
-                Text("MODEL")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.appTextSecondary)
-                    .kerning(0.5)
-                Picker("Model", selection: $viewModel.selectedModelID) {
-                    ForEach(viewModel.currentProvider?.availableModels ?? [], id: \.id) { model in
-                        Text(model.displayName).tag(model.id as String?)
-                    }
+            if let note = viewModel.modelRouteNote {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10))
+                    Text(note)
+                        .font(.system(size: 11))
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(Color.appTextPrimary)
-                .font(.system(size: 13))
+                .foregroundStyle(Color.appAccent)
             }
         }
         .padding(.horizontal, 16)

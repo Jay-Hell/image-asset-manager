@@ -71,8 +71,30 @@ final class GenerationViewModel {
             ?? provider.availableModels.first
     }
 
+    /// The model that will actually be used for the next generation.
+    /// Auto-routes to the reference-capable model when refs are attached and the
+    /// user-selected model can't handle them.
+    var effectiveModel: ImageModel? {
+        guard let provider = currentProvider, let selected = currentModel else { return nil }
+        if !confirmedReferenceIDs.isEmpty
+            && provider is NanaBananaProvider
+            && !NanaBananaProvider.supportsReferences(modelID: selected.id) {
+            return provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.geminiWithRefs } ?? selected
+        }
+        return selected
+    }
+
+    /// Non-nil when the generation will use a different model than the user selected
+    /// (e.g. auto-routing to "With References" because refs are attached).
+    var modelRouteNote: String? {
+        guard let selected = currentModel, let effective = effectiveModel, selected.id != effective.id else {
+            return nil
+        }
+        return "References attached — using \(effective.displayName)"
+    }
+
     var estimatedCost: Decimal {
-        guard let provider = currentProvider, let model = currentModel else { return 0 }
+        guard let provider = currentProvider, let model = effectiveModel else { return 0 }
         let params = GenerationParams(
             prompt: promptText,
             model: model,
@@ -86,7 +108,7 @@ final class GenerationViewModel {
     var canGenerate: Bool {
         !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && currentProvider != nil
-            && currentModel != nil
+            && effectiveModel != nil
             && !isGenerating
     }
 
@@ -175,7 +197,7 @@ final class GenerationViewModel {
     // MARK: - Generation
 
     func generate() async {
-        guard canGenerate, let provider = currentProvider, let model = currentModel else { return }
+        guard canGenerate, let provider = currentProvider, let model = effectiveModel else { return }
 
         isGenerating = true
         generationError = nil
@@ -245,7 +267,7 @@ final class GenerationViewModel {
             projectID: selectedProjectID,
             collectionID: selectedCollectionID,
             providerID: currentProvider?.providerID ?? "",
-            modelID: currentModel?.id ?? "",
+            modelID: effectiveModel?.id ?? "",
             prompt: promptText,
             negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
             width: resolvedWidth,
