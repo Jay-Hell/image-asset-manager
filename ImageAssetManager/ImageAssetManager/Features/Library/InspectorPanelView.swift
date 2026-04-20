@@ -5,7 +5,7 @@ struct InspectorPanelView: View {
     let detail: AssetDetail
     let libraryURL: URL
     var onTagsChanged: ([String]) -> Void
-    var onDelete: () -> Void
+    var onDelete: (Bool) -> Void   // Bool: fromDisk
     var onRegenerate: () -> Void
     var onExport: () -> Void
     var onPromoteVariant: (String, String) -> Void
@@ -67,10 +67,11 @@ struct InspectorPanelView: View {
         }
         .background(Color.appSurface)
         .confirmationDialog("Delete this asset?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
-            Button("Delete", role: .destructive, action: onDelete)
+            Button("Remove from Library", role: .destructive) { onDelete(false) }
+            Button("Delete from Disk", role: .destructive) { onDelete(true) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This cannot be undone. The image file will also be removed.")
+            Text("\"Remove from Library\" keeps the file on disk. \"Delete from Disk\" permanently removes the file.")
         }
     }
 

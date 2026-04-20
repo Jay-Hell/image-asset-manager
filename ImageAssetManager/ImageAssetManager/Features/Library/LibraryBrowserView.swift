@@ -9,7 +9,7 @@ struct LibraryBrowserView: View {
 
     var body: some View {
         NavigationSplitView {
-            SourcePanelView(viewModel: viewModel)
+            SourcePanelView(viewModel: viewModel, onGenerate: onGenerate)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } content: {
             AssetGridView(viewModel: viewModel, onGenerate: onGenerate)
@@ -23,8 +23,8 @@ struct LibraryBrowserView: View {
                         onTagsChanged: { tagNames in
                             Task { try? await viewModel.updateAssetTags(assetID: detail.asset.id, tagNames: tagNames) }
                         },
-                        onDelete: {
-                            Task { try? await viewModel.deleteAsset(detail.asset.id) }
+                        onDelete: { fromDisk in
+                            Task { try? await viewModel.deleteAsset(detail.asset.id, fromDisk: fromDisk) }
                         },
                         onRegenerate: { onRegenerate(detail.asset) },
                         onExport: { onExport(detail.asset) },

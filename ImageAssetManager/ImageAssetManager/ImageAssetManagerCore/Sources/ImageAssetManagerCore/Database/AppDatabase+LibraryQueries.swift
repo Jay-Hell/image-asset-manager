@@ -8,10 +8,14 @@ extension AppDatabase {
         collectionID: String? = nil,
         tagID: String? = nil,
         variantFamilyID: String? = nil,
-        searchText: String? = nil
+        searchText: String? = nil,
+        showHidden: Bool = false
     ) async throws -> [Asset] {
         try await read { db in
             var request = Asset.order(Column("created_at").desc)
+            if !showHidden {
+                request = request.filter(Column("is_hidden") == false)
+            }
             if let pid = projectID {
                 request = request.filter(Column("project_id") == pid)
             }
@@ -183,6 +187,30 @@ extension AppDatabase {
     public func deleteAsset(id: String) async throws {
         try await write { db in
             try db.execute(sql: "DELETE FROM assets WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public func setHidden(assetIDs: [String], hidden: Bool) async throws {
+        guard !assetIDs.isEmpty else { return }
+        let capturedIDs = assetIDs
+        let capturedHidden = hidden
+        try await write { db in
+            for id in capturedIDs {
+                try db.execute(
+                    sql: "UPDATE assets SET is_hidden = ? WHERE id = ?",
+                    arguments: [capturedHidden, id]
+                )
+            }
+        }
+    }
+
+    public func deleteAssets(ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        let capturedIDs = ids
+        try await write { db in
+            for id in capturedIDs {
+                try db.execute(sql: "DELETE FROM assets WHERE id = ?", arguments: [id])
+            }
         }
     }
 }

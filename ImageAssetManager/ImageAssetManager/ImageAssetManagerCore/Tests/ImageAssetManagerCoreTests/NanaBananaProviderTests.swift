@@ -51,9 +51,25 @@ private func mockImageData() -> Data {
     ])
 }
 
-private func makeSuccessResponse(imageData: Data) throws -> Data {
+private func makeImagenSuccessResponse(imageData: Data) throws -> Data {
     let payload: [String: Any] = [
         "predictions": [["bytesBase64Encoded": imageData.base64EncodedString(), "mimeType": "image/png"]]
+    ]
+    return try JSONSerialization.data(withJSONObject: payload)
+}
+
+private func makeGeminiSuccessResponse(imageData: Data) throws -> Data {
+    let payload: [String: Any] = [
+        "candidates": [[
+            "content": [
+                "parts": [[
+                    "inlineData": [
+                        "mimeType": "image/png",
+                        "data": imageData.base64EncodedString(),
+                    ],
+                ]],
+            ],
+        ]],
     ]
     return try JSONSerialization.data(withJSONObject: payload)
 }
@@ -62,10 +78,10 @@ private func makeHTTPResponse(statusCode: Int) -> HTTPURLResponse {
     HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
 }
 
-private func makeParams() -> GenerationParams {
+private func makeParams(modelID: String = NanaBananaProvider.ModelID.imagenStandard, cost: Decimal = 0.04) -> GenerationParams {
     GenerationParams(
         prompt: "A test landscape",
-        model: ImageModel(id: "nano-banana-v1", displayName: "v1", supportedAspectRatios: [.square], costPerImage: 0.04),
+        model: ImageModel(id: modelID, displayName: "Test", supportedAspectRatios: [.square], costPerImage: cost),
         aspectRatio: .square,
         width: 1024,
         height: 1024
@@ -78,13 +94,50 @@ private func makeParams() -> GenerationParams {
 struct NanaBananaProviderTests {
     let provider = NanaBananaProvider()
 
+    @Test func availableModelsIncludesThreeImagenTiersAndGemini() {
+        let ids = provider.availableModels.map(\.id)
+        #expect(ids.contains(NanaBananaProvider.ModelID.imagenFast))
+        #expect(ids.contains(NanaBananaProvider.ModelID.imagenStandard))
+        #expect(ids.contains(NanaBananaProvider.ModelID.imagenUltra))
+        #expect(ids.contains(NanaBananaProvider.ModelID.geminiWithRefs))
+    }
+
+    @Test func imagenTiersAreOrderedByCost() {
+        let fast = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenFast }!
+        let std  = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenStandard }!
+        let ultra = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenUltra }!
+        #expect(fast.costPerImage < std.costPerImage)
+        #expect(std.costPerImage < ultra.costPerImage)
+    }
+
+    @Test func onlyGeminiModelSupportsReferences() {
+        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenFast))
+        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenStandard))
+        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenUltra))
+        #expect(NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.geminiWithRefs))
+    }
+
     @Test func estimateCostReturnsModelRate() {
-        let params = makeParams()
+        let params = makeParams(modelID: NanaBananaProvider.ModelID.imagenStandard, cost: 0.04)
         #expect(provider.estimateCost(params) == Decimal(string: "0.04"))
     }
 
+    @Test func modelCostsAreGBPConvertedFromPublishedUSDPrices() {
+        // Published Google USD prices per image — pin the conversion path so a drift in
+        // Currency.usdToGBP or a bad edit in availableModels shows up immediately.
+        let expected: [(String, Decimal)] = [
+            (NanaBananaProvider.ModelID.imagenFast,     Currency.gbp(fromUSD: 0.02)),
+            (NanaBananaProvider.ModelID.imagenStandard, Currency.gbp(fromUSD: 0.04)),
+            (NanaBananaProvider.ModelID.imagenUltra,    Currency.gbp(fromUSD: 0.06)),
+            (NanaBananaProvider.ModelID.geminiWithRefs, Currency.gbp(fromUSD: 0.039)),
+        ]
+        for (id, expectedCost) in expected {
+            let model = provider.availableModels.first { $0.id == id }
+            #expect(model?.costPerImage == expectedCost)
+        }
+    }
+
     @Test func generateThrowsWhenKeyMissing() async throws {
-        // Ensure key is absent
         try? KeychainService.delete(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
 
         await #expect(throws: ProviderError.self) {
@@ -92,17 +145,18 @@ struct NanaBananaProviderTests {
         }
     }
 
-    @Test func generateSuccessReturnsImage() async throws {
+    @Test func imagenResponseParsesPredictionShape() throws {
         let imgData = mockImageData()
-        let responseBody = try makeSuccessResponse(imageData: imgData)
+        let responseBody = try makeImagenSuccessResponse(imageData: imgData)
+        let result = try provider.parseImagenResponseForTesting(responseBody)
+        #expect(result.format == "png")
+        #expect(!result.data.isEmpty)
+    }
 
-        MockURLProtocol.handler = { _ in (makeHTTPResponse(statusCode: 200), responseBody) }
-
-        try KeychainService.store("test-key", service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
-        defer { try? KeychainService.delete(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount) }
-
-        // Use mock session — patch URLSession.shared isn't possible, so we test parse logic via the response path
-        let result = try provider.parseResponseForTesting(responseBody)
+    @Test func geminiResponseParsesInlineDataFromCandidates() throws {
+        let imgData = mockImageData()
+        let responseBody = try makeGeminiSuccessResponse(imageData: imgData)
+        let result = try provider.parseGeminiResponseForTesting(responseBody)
         #expect(result.format == "png")
         #expect(!result.data.isEmpty)
     }

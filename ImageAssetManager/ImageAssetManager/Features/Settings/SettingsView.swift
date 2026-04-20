@@ -1,97 +1,172 @@
 import SwiftUI
 import ImageAssetManagerCore
 
-struct SettingsView: View {
-    @State private var apiKey: String = ""
-    @State private var isKeyStored: Bool = false
-    @State private var saveMessage: String?
-    @State private var saveError: String?
-    @State private var showClearConfirmation: Bool = false
+/// Identifiable wrapper so we can use .sheet(item:) and guarantee non-nil URL in the sheet body.
+private struct MigrationDestination: Identifiable {
+    let id = UUID()
+    let url: URL
+}
 
-    private let service = "com.yourapp.imageassetmanager"
-    private let account = "anthropic_api_key"
+struct SettingsView: View {
+    @Environment(AppEnvironment.self) private var env
+
+    @State private var migrationDestination: MigrationDestination?
+    @State private var migrationError: String?
+    @State private var isMigrating: Bool = false
+    @State private var showClearLibraryConfirmation: Bool = false
+    @State private var isClearing: Bool = false
+    @State private var clearError: String?
 
     var body: some View {
         Form {
+            // MARK: Image Generation API Key (Nano Banana / Google AI Studio)
+            KeychainKeyEditor(
+                title: "Nano Banana API Key",
+                service: NanaBananaProvider.keychainService,
+                account: NanaBananaProvider.keychainAccount,
+                helperText: "Get your key at aistudio.google.com. Works for all four image models (Fast, Standard, Pro, With References). Stored in macOS Keychain only — never uploaded to iCloud.",
+                footerText: "Required for image generation.",
+                removalMessage: "The Nano Banana API key will be removed from Keychain."
+            )
+
+            // MARK: Anthropic API Key (prompt refinement)
+            KeychainKeyEditor(
+                title: "Anthropic API Key",
+                service: "com.yourapp.imageassetmanager",
+                account: "anthropic_api_key",
+                helperText: "Get your key at console.anthropic.com. Stored in macOS Keychain only — never uploaded to iCloud.",
+                footerText: "Required for AI prompt refinement.",
+                removalMessage: "The Anthropic API key will be removed from Keychain."
+            )
+
+            // MARK: Library Location
             Section {
-                SecureField("Paste API key…", text: $apiKey)
-                    .textContentType(.password)
-
-                HStack(spacing: 10) {
-                    Button("Save") { saveKey() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color.appAccent)
-                        .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                    if isKeyStored {
-                        Button("Clear", role: .destructive) { showClearConfirmation = true }
-                            .buttonStyle(.bordered)
-                    }
-                }
-
-                if let msg = saveMessage {
-                    Label(msg, systemImage: "checkmark.seal.fill")
-                        .font(.caption)
-                        .foregroundStyle(Color.appAccent)
-                }
-                if let err = saveError {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
-
-                if isKeyStored && apiKey.isEmpty {
-                    Text("An API key is stored in Keychain.")
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(env.libraryURL.path(percentEncoded: false))
+                        .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.appTextSecondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+
+                    #if os(macOS)
+                    Button("Change Location…") { openFolderPicker() }
+                        .buttonStyle(.bordered)
+                    #endif
                 }
 
-                Text("Get your key at console.anthropic.com. Stored in macOS Keychain only — never uploaded to iCloud.")
+                Text("Move or copy the library database and all assets to a new folder. Changes take effect immediately.")
                     .font(.caption)
                     .foregroundStyle(Color.appTextSecondary)
             } header: {
-                Text("Anthropic API Key")
-            } footer: {
-                Text("Required for AI prompt refinement (Phase 10 feature).")
+                Text("Library Location")
+            }
+
+            // MARK: Clear Library
+            Section {
+                Text("Removes all assets, projects, collections, prompts, variants, and tags. Provider configuration and export presets are preserved.")
                     .font(.caption)
                     .foregroundStyle(Color.appTextSecondary)
+
+                if isClearing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Clearing library…")
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+                } else {
+                    Button("Clear Library…", role: .destructive) {
+                        showClearLibraryConfirmation = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } header: {
+                Text("Danger Zone")
             }
         }
         #if os(macOS)
         .formStyle(.grouped)
-        .frame(minWidth: 380, idealWidth: 420, minHeight: 220)
+        .frame(minWidth: 380, idealWidth: 440, minHeight: 300)
         #endif
         .navigationTitle("Settings")
-        .onAppear { loadKeyStatus() }
-        .confirmationDialog("Remove API Key", isPresented: $showClearConfirmation, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { clearKey() }
+        .sheet(item: $migrationDestination) { destination in
+            LibraryMigrationSheetView(
+                destinationURL: destination.url,
+                isMigrating: isMigrating,
+                onConfirm: { mode in
+                    let url = destination.url
+                    Task {
+                        isMigrating = true
+                        do {
+                            try await env.changeLibraryLocation(to: url, mode: mode)
+                            migrationDestination = nil   // dismiss sheet
+                        } catch {
+                            migrationError = error.localizedDescription
+                        }
+                        isMigrating = false
+                    }
+                }
+            )
+        }
+        .alert("Migration Failed", isPresented: .init(
+            get: { migrationError != nil },
+            set: { if !$0 { migrationError = nil } }
+        )) {
+            Button("OK") { migrationError = nil }
+        } message: {
+            Text(migrationError ?? "")
+        }
+        .confirmationDialog(
+            "Clear Library?",
+            isPresented: $showClearLibraryConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Records and Delete Files", role: .destructive) {
+                performClearLibrary(deleteFiles: true)
+            }
+            Button("Clear Records Only", role: .destructive) {
+                performClearLibrary(deleteFiles: false)
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The Anthropic API key will be removed from Keychain.")
+            Text("This will permanently remove all assets, projects, collections, prompts, variants, and tags from the library. This cannot be undone.")
+        }
+        .alert("Clear Failed", isPresented: .init(
+            get: { clearError != nil },
+            set: { if !$0 { clearError = nil } }
+        )) {
+            Button("OK") { clearError = nil }
+        } message: {
+            Text(clearError ?? "")
         }
     }
 
-    private func loadKeyStatus() {
-        isKeyStored = (try? KeychainService.retrieve(service: service, account: account)) != nil
-    }
+    // MARK: - Clear library
 
-    private func saveKey() {
-        let trimmed = apiKey.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        do {
-            try KeychainService.store(trimmed, service: service, account: account)
-            isKeyStored = true
-            apiKey = ""
-            saveError = nil
-            saveMessage = "API key saved."
-        } catch {
-            saveMessage = nil
-            saveError = error.localizedDescription
+    private func performClearLibrary(deleteFiles: Bool) {
+        Task {
+            isClearing = true
+            do {
+                try await env.clearLibrary(deleteFiles: deleteFiles)
+            } catch {
+                clearError = error.localizedDescription
+            }
+            isClearing = false
         }
     }
 
-    private func clearKey() {
-        try? KeychainService.delete(service: service, account: account)
-        isKeyStored = false
-        apiKey = ""
-        saveMessage = nil
+    // MARK: - Folder picker
+
+    private func openFolderPicker() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose Library Location"
+        panel.message = "Select the folder where the library database and assets will be stored."
+        if panel.runModal() == .OK, let url = panel.url {
+            migrationDestination = MigrationDestination(url: url)
+        }
+        #endif
     }
 }

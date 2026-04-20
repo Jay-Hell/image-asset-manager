@@ -59,19 +59,19 @@ struct SpendDashboardView: View {
     private var summaryCards: some View {
         #if os(macOS)
         HStack(spacing: 12) {
-            statCard("Est. Spend", String(format: "$%.4f", viewModel.summary.totalEstimated))
+            statCard("Est. Spend", viewModel.summary.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
             statCard("Actual", viewModel.summary.totalActual > 0
-                ? String(format: "$%.4f", viewModel.summary.totalActual) : "—")
+                ? viewModel.summary.totalActual.formatted(.currency(code: "GBP").precision(.fractionLength(4))) : "—")
             statCard("Generations", "\(viewModel.summary.generationCount)")
-            statCard("Avg / Gen", String(format: "$%.4f", viewModel.summary.avgCostPerGeneration))
+            statCard("Avg / Gen", viewModel.summary.avgCostPerGeneration.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
         }
         #else
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            statCard("Est. Spend", String(format: "$%.4f", viewModel.summary.totalEstimated))
+            statCard("Est. Spend", viewModel.summary.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
             statCard("Actual", viewModel.summary.totalActual > 0
-                ? String(format: "$%.4f", viewModel.summary.totalActual) : "—")
+                ? viewModel.summary.totalActual.formatted(.currency(code: "GBP").precision(.fractionLength(4))) : "—")
             statCard("Generations", "\(viewModel.summary.generationCount)")
-            statCard("Avg / Gen", String(format: "$%.4f", viewModel.summary.avgCostPerGeneration))
+            statCard("Avg / Gen", viewModel.summary.avgCostPerGeneration.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
         }
         #endif
     }
@@ -179,7 +179,7 @@ struct SpendDashboardView: View {
                         Text("\(project.generationCount) gen")
                             .font(.caption2)
                             .foregroundStyle(Color.appTextSecondary)
-                        Text(String(format: "$%.4f", project.totalEstimated))
+                        Text(project.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
                             .font(.caption)
                             .fontWeight(.medium)
                             .foregroundStyle(Color.appTextPrimary)
@@ -222,7 +222,7 @@ struct SpendDashboardView: View {
                         Text("\(provider.generationCount) gen")
                             .font(.caption2)
                             .foregroundStyle(Color.appTextSecondary)
-                        Text(String(format: "$%.4f", provider.totalEstimated))
+                        Text(provider.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
                             .font(.caption)
                             .fontWeight(.medium)
                             .foregroundStyle(Color.appTextPrimary)

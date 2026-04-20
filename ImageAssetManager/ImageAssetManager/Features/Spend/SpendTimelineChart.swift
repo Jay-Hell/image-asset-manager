@@ -62,7 +62,7 @@ struct SpendTimelineChart: View {
             }
         }
         .chartYAxis {
-            AxisMarks(format: .currency(code: "USD").precision(.fractionLength(4)))
+            AxisMarks(format: .currency(code: "GBP").precision(.fractionLength(4)))
         }
         .chartPlotStyle { area in
             area.background(Color.appSurface)

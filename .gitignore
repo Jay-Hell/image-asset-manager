@@ -16,6 +16,9 @@ DerivedData/
 # Package.resolved — commit this to pin dependency versions
 # *.resolved
 
+# Node.js (mcp-server)
+node_modules/
+
 # Secrets
 *.env
 Secrets/

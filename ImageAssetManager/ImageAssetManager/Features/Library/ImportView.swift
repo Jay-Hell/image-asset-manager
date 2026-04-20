@@ -20,6 +20,30 @@ struct ImportView: View {
                 }
 
                 Form {
+                    Section {
+                        Picker("File Handling", selection: $viewModel.importMode) {
+                            ForEach(ImportMode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(viewModel.importMode == .move
+                             ? "Move removes the original from its source location."
+                             : "Copy keeps the original in place.")
+                            .font(.caption)
+                            .foregroundStyle(Color.appTextSecondary)
+
+                        Picker("File Naming", selection: $viewModel.importNaming) {
+                            ForEach(ImportNaming.allCases, id: \.self) { n in
+                                Text(n.rawValue).tag(n)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(namingCaption)
+                            .font(.caption)
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+
                     Picker("Project", selection: $viewModel.importProjectID) {
                         Text("None").tag(Optional<String>.none)
                         ForEach(viewModel.projects, id: \.id) { project in
@@ -129,17 +153,29 @@ struct ImportView: View {
         }
     }
 
+    private var namingCaption: String {
+        switch viewModel.importNaming {
+        case .preserveOriginal: "Files keep their original names, e.g. photo.png"
+        case .prependDate:      "Date prepended to the original name, e.g. 2026-04-18_photo.png"
+        case .dateAndIndex:     "Files renamed to date and sequence, e.g. 2026-04-18_001.png"
+        }
+    }
+
     private func performImport() {
         let tagNames = viewModel.importTags
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        let mode = viewModel.importMode
+        let naming = viewModel.importNaming
         Task {
             try? await viewModel.importAssets(
                 urls: viewModel.importURLs,
                 projectID: viewModel.importProjectID,
                 collectionID: viewModel.importCollectionID,
-                tagNames: tagNames
+                tagNames: tagNames,
+                mode: mode,
+                naming: naming
             )
             viewModel.importURLs = []
             viewModel.importTags = ""

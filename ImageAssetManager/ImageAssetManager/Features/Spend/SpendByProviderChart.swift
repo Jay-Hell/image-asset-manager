@@ -31,13 +31,13 @@ struct SpendByProviderChart: View {
             .foregroundStyle(Color.appAccent)
             .cornerRadius(3)
             .annotation(position: .trailing, alignment: .leading) {
-                Text(String(format: "$%.4f", provider.totalEstimated))
+                Text(provider.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
                     .font(.caption2)
                     .foregroundStyle(Color.appTextSecondary)
             }
         }
         .chartXAxis {
-            AxisMarks(format: .currency(code: "USD").precision(.fractionLength(4)))
+            AxisMarks(format: .currency(code: "GBP").precision(.fractionLength(4)))
         }
         .chartPlotStyle { area in
             area.background(Color.appSurface)

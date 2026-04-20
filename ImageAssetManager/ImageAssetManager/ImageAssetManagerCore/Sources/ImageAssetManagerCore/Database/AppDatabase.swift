@@ -185,7 +185,44 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v3_asset_hidden_column") { db in
+            try db.alter(table: "assets") { t in
+                t.add(column: "is_hidden", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         try migrator.migrate(writer)
+    }
+
+    /// Flush the WAL journal into the main database file so it is self-contained before a copy or move.
+    /// Must run outside a transaction — uses barrierWriteWithoutTransaction for this reason.
+    public func checkpoint() async throws {
+        _ = try await writer.barrierWriteWithoutTransaction { db in
+            try db.checkpoint(.truncate)
+        }
+    }
+
+    /// Delete all user data from every table. Provider config and export presets are preserved.
+    public func clearAllData() async throws {
+        try await writer.write { db in
+            // Delete in FK-safe order (children before parents).
+            try db.execute(sql: "DELETE FROM prompt_refinements")
+            try db.execute(sql: "DELETE FROM asset_usage")
+            try db.execute(sql: "DELETE FROM spend_log")
+            try db.execute(sql: "DELETE FROM prompt_asset")
+            try db.execute(sql: "DELETE FROM asset_references")
+            try db.execute(sql: "DELETE FROM reference_entries")
+            try db.execute(sql: "DELETE FROM variant_members")
+            try db.execute(sql: "DELETE FROM asset_tags")
+            try db.execute(sql: "DELETE FROM assets")
+            try db.execute(sql: "DELETE FROM variants")
+            try db.execute(sql: "DELETE FROM reference_sets")
+            try db.execute(sql: "DELETE FROM collections")
+            try db.execute(sql: "DELETE FROM projects")
+            try db.execute(sql: "DELETE FROM tags")
+            try db.execute(sql: "DELETE FROM prompts")
+            // Preserved: providers, export_presets
+        }
     }
 
     public func read<T: Sendable>(
