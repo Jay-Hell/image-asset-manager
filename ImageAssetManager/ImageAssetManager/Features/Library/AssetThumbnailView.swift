@@ -18,10 +18,11 @@ struct AssetThumbnailView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            LocalImage(url: fileURL)
-                .frame(minHeight: 120)
-                .clipped()
-                .background(Color.imageMatte)
+            Color.imageMatte
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    LocalImage(url: fileURL)
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
             Text(chipLabel)
