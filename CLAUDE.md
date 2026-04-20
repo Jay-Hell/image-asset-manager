@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Image Asset Manager** — A macOS-primary / iPad-companion SwiftUI app for AI image generation, asset management, and consulting workflow integration. Integrates with iCloud Drive for storage, Obsidian for vault sync, and exposes a local MCP server for Claude Code. iPhone is explicitly out of scope for v1.
 
-Full specification: `/Users/johnlivingston/IonicConsulting/Asset Management Tool/Asset Management Tool - Specification v0.5.md` (working revision). Previous milestone: `v0.4.md`.
+Full specification: `/Users/johnlivingston/IonicConsulting/Asset Management Tool/Asset Management Tool - Specification v0.6.md` (working revision). Previous: `v0.5.md` → `v0.4.md`.
 
 ## Repository Layout
 
@@ -16,17 +16,27 @@ image-asset-manager/
     ImageAssetManager.xcodeproj/        ← Xcode project
     ImageAssetManager/                  ← Universal app target (macOS + iPadOS)
       App/                              ← ImageAssetManagerApp, AppEnvironment,
-                                          MCPServer (Swift NWListener, macOS only)
+                                          MCPServer (NWListener, macOS only),
+                                          MCPServer+Generate (generate_image handler)
       Features/                         ← Generation, Library, Prompts, Export,
                                           Spend, Settings, ContentView
-      Shared/                           ← Components, Extensions, Theme
+      Shared/                           ← Components (KeychainKeyEditor, LocalImage),
+                                          Theme
       Resources/                        ← Assets.xcassets
       ImageAssetManagerCore/            ← Embedded Swift package (NOT in a top-level Packages/)
         Sources/ImageAssetManagerCore/
+          Currency.swift                ← USD→GBP conversion (single source of truth)
+          DataHash.swift                ← Data.sha256 extension
           Database/                     ← AppDatabase + per-feature query extensions,
-                                          LibrarySetup, migrations
-          Providers/                    ← ImageProvider protocol, NanaBananaProvider,
-                                          ProviderRegistry, ProviderError
+                                          LibrarySetup, migrations, Resolvers
+          Generation/                   ← GenerationService (actor), GenerationPolicy
+                                          (budget/routing), PromptFlattener
+          Library/                      ← LibraryMigrationService (actor), ImportNaming
+          Providers/                    ← ImageProvider protocol, NanaBananaProvider
+                                          (4-model catalogue), ProviderRegistry,
+                                          ProviderError
+          Network/                      ← AnthropicClient (URLSession)
+          Refinement/                   ← PromptRefinementSession
           Models/                       ← Swift model types (GRDB-conformant)
           Export/                       ← IndexExporter (atomic JSON export)
           Security/                     ← KeychainService
@@ -41,10 +51,10 @@ image-asset-manager/
 ### Layer Responsibilities
 
 - **ImageAssetManagerCore** — all business logic, data access (GRDB), provider abstraction, API clients. No SwiftUI imports. Swift 6 language mode; use `Sendable`, actors, and `async/await` throughout.
-- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene.
+- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene. Holds a `libraryRevision: Int` counter that view-models watch via `.task(id: env.libraryRevision)` to force a rebuild after destructive operations (library location change, clear library).
 - **MCP server** — two-tier setup:
-  - **Swift HTTP server** (`App/MCPServer.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Holds direct `AppDatabase` access via `AppDatabase+MCPQueries.swift`.
-  - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools return an error.
+  - **Swift HTTP server** (`App/MCPServer.swift` + `App/MCPServer+Generate.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Reads via `AppDatabase+MCPQueries.swift`, writes via `GenerationService` for image generation. `database` and `libraryURL` are internal (not private) so extension files can see them.
+  - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools (`generate_image`, `mark_asset_used`, prompt tools) return a "requires the app to be running" error.
 
 ### Storage
 
@@ -67,6 +77,23 @@ Layout inside the container (created by `LibrarySetup.initialise(at:)`):
 
 API keys are stored in Keychain only — never in iCloud, providers.json, or code.
 
+**Sandbox entitlements** (`ImageAssetManager.entitlements`) — all four are required, don't remove any:
+
+- `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark.
+- `com.apple.security.network.client` — outbound HTTPS to Google AI Studio and api.anthropic.com. Without this, every URLSession call returns the misleading `NSURLErrorCannotFindHost` ("server not found").
+- `com.apple.security.network.server` — bind the MCP `NWListener` on loopback. Without this, `NWListener(using:)` fails silently and `curl localhost:47821/health` can't connect.
+- iCloud container entitlements (`iCloud.Ionic.ImageAssetManager`) — default library location.
+
+### Import File Naming
+
+`ImportNaming` (`Library/ImportNaming.swift`) is the enum the import flow uses to derive stored filenames inside `assets/`:
+
+- `preserveOriginal` — keep the source stem; append `_N` on collision.
+- `prependDate` — `YYYY-MM-DD_{stem}.{ext}`; append `_N` on collision.
+- `dateAndIndex` — `YYYY-MM-DD_NNN.{ext}` (zero-padded 3-digit index per import batch).
+
+All strategies dedupe via an in-flight `usedFilenames: Set<String>` passed by reference so one batch import produces unique names without hitting the disk repeatedly. The last-used strategy is persisted in `UserDefaults`.
+
 ### Database
 
 `AppDatabase` (`Database/AppDatabase.swift`) is a `final class: Sendable` wrapping GRDB's `DatabaseQueue` in WAL mode. Schema is managed via `DatabaseMigrator`; migrations are **append-only** — never edit an existing one. Current migrations:
@@ -84,16 +111,59 @@ Query logic is split by feature into extension files — add new queries in the 
 - `AppDatabase+SpendQueries.swift` — spend dashboard aggregates
 - `AppDatabase+RefinementQueries.swift` — Claude prompt refinement history
 - `AppDatabase+MCPQueries.swift` — shapes reads for the MCP server
+- `AppDatabase+Resolvers.swift` — `findProject(idOrName:)` / `findCollection(idOrName:projectID:)` for the name-or-UUID input accepted by `generate_image`
 
 `AppDatabase.checkpoint()` flushes the WAL into the main `.db` file and **must be called before moving or copying the library** (see `AppEnvironment.changeLibraryLocation`). It uses `barrierWriteWithoutTransaction` so it can't run inside a transaction.
 
+`AppDatabase.clearAllData()` wipes all user tables in FK-safe order but **preserves `providers` and `export_presets`** (seed/configuration data). Drives the Settings → Danger Zone → Clear Library action via `AppEnvironment.clearLibrary(deleteFiles:)`.
+
 `IndexExporter.export(from:to:assetsBaseURL:)` is the single call site for writing `index.json`. It writes atomically via a `.tmp` file + `FileManager.replaceItemAt`. Call it after every DB write.
+
+### Library Migration
+
+`LibraryMigrationService` (`Library/LibraryMigrationService.swift`, actor) owns the change-library-location flow. Important behaviours:
+
+- **Uses `copyItem` for both move and copy modes**, then `removeItem` on the source for move. Doing it this way (rather than `moveItem`) works reliably across volume boundaries and triggers iCloud downloads on demand.
+- Runs a **write-access preflight** (writes and deletes a probe file at the destination) before touching any library file; throws `MigrationError.destinationNotWritable` if that fails.
+- Migrates the full set: `library.db`, `library.db-shm`, `library.db-wal`, `index.json`, `providers.json`, `assets/`, `prompts/`. The WAL sidecars must be included even though `checkpoint()` was called — SQLite can recreate them before the migration runs.
+- Caller must `AppDatabase.checkpoint()` first and re-initialise `AppDatabase` against the new path afterwards (handled by `AppEnvironment.changeLibraryLocation`).
 
 ### Provider Abstraction
 
 Every provider implements `ImageProvider: Sendable`. Adding a provider requires one new struct; zero changes elsewhere. `ProviderRegistry` is an actor — always access providers through it, never instantiate directly.
 
 `GenerationParams.additionalParams` is `[String: Any]` (marked `@unchecked Sendable`) for provider-specific knobs. `ReferenceInput` carries base64 image data, role (`styleAnchor`/`subjectAnchor`), and optional weight.
+
+`NanaBananaProvider` exposes **four model tiers** across two Google endpoints (`:predict` for Imagen 4, `:generateContent` for Gemini), dispatched internally by model ID prefix. All IDs live in `NanaBananaProvider.ModelID` so the October 2026 Gemini deprecation bump touches one place:
+
+| `ModelID` constant | Endpoint | Refs |
+|---|---|---|
+| `imagenFast` / `imagenStandard` / `imagenUltra` | `:predict` | No (Imagen 4 on this API is text-only) |
+| `geminiWithRefs` | `:generateContent` | Yes (up to 3 via `inlineData` parts) |
+
+Only `supportsReferences(modelID:)` returns true for `geminiWithRefs` — Imagen tiers are text-only, so the negative prompt is inlined as `"\n\nAvoid: {negative}"` rather than sent as a separate parameter.
+
+### Generation Pipeline
+
+`GenerationService` (`Generation/GenerationService.swift`, actor) owns the write pipeline: provider call → disk write → Asset/SpendLog/tags/refs/variant DB rows → `index.json` export. Shared by the MCP `generate_image` tool today and (planned) the in-app `GenerationViewModel.confirmGeneration()` to eliminate code drift.
+
+Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/IO dependencies):
+
+- `checkBudget(count:unitCost:limits:)` — throws `BudgetViolation` when either the image count or the projected cost exceeds the limits. Defaults: 20 images / £2.50.
+- `mergeReferences(project:explicit:maxReferences:)` — combines project active refs with explicit asset IDs, caps at 3 (provider max), project refs take precedence when over-cap.
+- `chooseModel(quality:hasReferences:)` — maps `"fast"`/`"standard"`/`"pro"`/`"with_references"`/`"auto"` + ref-presence to a concrete model ID, flagging `autoRouted: true` when the caller's pick can't use refs and we fall back to Gemini.
+
+`PromptFlattener` accepts either a plain string or `[String: Any]` and emits Subject-Context-Style-ordered prose. Canonical keys (`subject`, `context`, `action`, `setting`, `style`, `composition`, `lighting`, `mood`, `camera`, `palette`, `details`, `extra`) are emitted in order; arbitrary keys are flattened with title-cased labels; non-prompt keys (`seed`, `steps`, `sampler`, `cfg_scale`, etc.) are dropped. Research found neither Imagen 4 nor Gemini 2.5 Flash Image has a native JSON input — both want prose in a single string.
+
+### MCP Tools
+
+The Swift server exposes **11 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
+
+**Read-only** (work offline via `index.json` fallback too): `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `list_collections`, `get_collection`, `get_spend`.
+
+**Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate_image`.
+
+`generate_image` takes prompt (string or JSON), quality tier, optional project/collection (name or UUID via `AppDatabase.findProject(idOrName:)` / `findCollection(idOrName:projectID:)`), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at 3), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
 
 ### Platform Strategy
 
@@ -105,6 +175,7 @@ Every provider implements `ImageProvider: Sendable`. Adding a provider requires 
 
 - **IDs**: UUID strings throughout (stored as `TEXT` in SQLite).
 - **Dates**: ISO 8601 strings in SQLite and JSON.
+- **Currency**: **GBP everywhere** — DB columns (`estimated_cost`, `actual_cost`), model `costPerImage`, UI displays, chart axes. Provider prices published in USD (Google, Anthropic) are converted at the provider boundary via `Currency.gbp(fromUSD:)` (`ImageAssetManagerCore/Currency.swift`). Update `Currency.usdToGBP` when the FX rate drifts; do not introduce ad-hoc conversions elsewhere.
 - **index.json**: written atomically after every SQLite write via `IndexExporter`.
 - **Accent colour**: SwiftUI `.indigo` exclusively — no secondary accents.
 - **Typography**: SF Pro throughout; `SF Mono` for all prompt text areas.
@@ -199,20 +270,15 @@ git checkout develop && git merge feature/phase-N-description
 
 ## MCP Server Config
 
-Register the Node.js proxy in Claude Code (point `command`/`args` at the local checkout; see `mcp-server/README.md` for the full walkthrough):
+Register the Node.js proxy at user scope so it's available from any project on this Mac:
 
-```json
-{
-  "mcpServers": {
-    "image-asset-manager": {
-      "command": "node",
-      "args": ["/absolute/path/to/Image-asset-manager/mcp-server/src/index.js"],
-      "env": {
-        "LIBRARY_PATH": "~/Library/Mobile Documents/iCloud~Ionic~ImageAssetManager/Documents"
-      }
-    }
-  }
-}
+```bash
+claude mcp add image-asset-manager \
+  --scope user \
+  --env LIBRARY_PATH="$HOME/Library/Mobile Documents/iCloud~Ionic~ImageAssetManager/Documents" \
+  -- node /absolute/path/to/Image-asset-manager/mcp-server/src/index.js
 ```
 
-`LIBRARY_PATH` is only used in offline fallback mode (reads `index.json` directly). When the macOS app is running, every tool call is forwarded to `http://127.0.0.1:47821` regardless of `LIBRARY_PATH`. Smoke test with `curl http://localhost:47821/health` → `{"status":"ok"}`.
+`LIBRARY_PATH` is only used in offline fallback mode (reads `index.json` directly). When the macOS app is running, every tool call is forwarded to `http://127.0.0.1:47821` and the live library location resolved from `AppEnvironment` is used regardless of `LIBRARY_PATH`. Smoke test with `curl http://localhost:47821/health` → `{"status":"ok"}`.
+
+If the server isn't listening, check the Xcode console for a `[MCPServer]` error (typically an entitlement issue — see Sandbox entitlements above).

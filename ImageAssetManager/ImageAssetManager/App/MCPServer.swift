@@ -7,8 +7,8 @@ actor MCPServer {
     static let port: UInt16 = 47821
 
     private var listener: NWListener?
-    private let database: AppDatabase
-    private let libraryURL: URL
+    let database: AppDatabase
+    let libraryURL: URL
 
     init(database: AppDatabase, libraryURL: URL) {
         self.database = database
@@ -21,8 +21,11 @@ actor MCPServer {
             host: .init("127.0.0.1"),
             port: NWEndpoint.Port(rawValue: MCPServer.port)!
         )
-        guard let lsn = try? NWListener(using: params) else {
-            print("[MCPServer] Could not create listener on port \(MCPServer.port)")
+        let lsn: NWListener
+        do {
+            lsn = try NWListener(using: params)
+        } catch {
+            print("[MCPServer] Failed to create listener on port \(MCPServer.port): \(error)")
             return
         }
         lsn.stateUpdateHandler = { state in
@@ -217,6 +220,9 @@ actor MCPServer {
                 assetsBaseURL: libraryURL.appending(path: "assets")
             )
             return ["success": true, "assetID": id] as [String: Any]
+
+        case "generate_image":
+            return try await handleGenerateImage(args: args)
 
         default:
             throw MCPToolError.unknownTool(name)
