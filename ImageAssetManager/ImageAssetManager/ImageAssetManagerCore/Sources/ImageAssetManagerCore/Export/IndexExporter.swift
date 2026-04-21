@@ -63,7 +63,6 @@ struct IndexAssetRecord: Codable, Sendable {
     let projectID: String?
     let projectIDs: [String]
     let projectNames: [String]
-    let collectionID: String?
     let providerID: String
     let modelID: String
     let prompt: String?
@@ -83,7 +82,6 @@ struct IndexAssetRecord: Codable, Sendable {
         self.projectID = projectIDs.first ?? asset.projectID
         self.projectIDs = projectIDs
         self.projectNames = projectNames
-        self.collectionID = asset.collectionID
         self.providerID = asset.providerID
         self.modelID = asset.modelID
         self.prompt = asset.prompt

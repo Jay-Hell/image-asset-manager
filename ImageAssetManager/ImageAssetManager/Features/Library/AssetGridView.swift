@@ -6,6 +6,10 @@ struct AssetGridView: View {
     var onGenerate: () -> Void
 
     @State private var showDeleteConfirmation: Bool = false
+    @State private var showClearProjectsConfirmation: Bool = false
+    @State private var showClearTagsConfirmation: Bool = false
+    @State private var showNewTagSheet: Bool = false
+    @State private var newTagName: String = ""
 
     private let minTileWidth: CGFloat = 160
     private let spacing: CGFloat = 4
@@ -125,6 +129,69 @@ struct AssetGridView: View {
         } message: {
             Text("\"Remove from Library\" keeps the file on disk. \"Delete from Disk\" permanently removes the file.")
         }
+        .confirmationDialog(
+            "Remove all projects from \(viewModel.selectedAssetIDs.count) asset\(viewModel.selectedAssetIDs.count == 1 ? "" : "s")?",
+            isPresented: $showClearProjectsConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Projects", role: .destructive) {
+                let ids = viewModel.selectedAssetIDs
+                Task { try? await viewModel.bulkClearProjects(ids: ids) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The assets themselves remain, but every project membership is removed.")
+        }
+        .confirmationDialog(
+            "Remove all tags from \(viewModel.selectedAssetIDs.count) asset\(viewModel.selectedAssetIDs.count == 1 ? "" : "s")?",
+            isPresented: $showClearTagsConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Tags", role: .destructive) {
+                let ids = viewModel.selectedAssetIDs
+                Task { try? await viewModel.bulkClearTags(ids: ids) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The assets themselves remain, but every tag is removed.")
+        }
+        .sheet(isPresented: $showNewTagSheet) {
+            newTagSheet
+        }
+    }
+
+    /// Inline sheet for creating a new tag and attaching it to the selection in one step.
+    /// Short because it's a single field — no reason to navigate elsewhere for this.
+    private var newTagSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New Tag")
+                .font(.headline)
+            Text("Creates the tag if it doesn't exist and adds it to \(viewModel.selectedAssetIDs.count) asset\(viewModel.selectedAssetIDs.count == 1 ? "" : "s").")
+                .font(.caption)
+                .foregroundStyle(Color.appTextSecondary)
+            TextField("Tag name", text: $newTagName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { commitNewTag() }
+            HStack {
+                Spacer()
+                Button("Cancel") { showNewTagSheet = false }
+                    .buttonStyle(.bordered)
+                Button("Add") { commitNewTag() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.appAccent)
+                    .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 320)
+    }
+
+    private func commitNewTag() {
+        let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let ids = viewModel.selectedAssetIDs
+        Task { try? await viewModel.bulkAddTag(ids: ids, tagName: trimmed) }
+        showNewTagSheet = false
     }
 
     // MARK: - Selectable cell
@@ -189,6 +256,69 @@ struct AssetGridView: View {
 
     // MARK: - Select mode action bar
 
+    /// Bulk project assignment menu: add a single project to every checked asset, or
+    /// wipe every project membership from them. Disabled when no assets are selected.
+    private var projectsMenu: some View {
+        Menu {
+            if viewModel.projects.isEmpty {
+                Text("No projects — add one in Settings")
+            } else {
+                Menu("Add to…") {
+                    ForEach(viewModel.projects, id: \.id) { project in
+                        Button(project.name) {
+                            let ids = viewModel.selectedAssetIDs
+                            Task { try? await viewModel.bulkAddProject(ids: ids, projectID: project.id) }
+                        }
+                    }
+                }
+                Divider()
+                Button("Clear All Projects", role: .destructive) {
+                    showClearProjectsConfirmation = true
+                }
+            }
+        } label: {
+            Label("Projects", systemImage: "folder.badge.plus")
+        }
+        .menuStyle(.borderedButton)
+        .controlSize(.small)
+        .disabled(viewModel.selectedAssetIDs.isEmpty)
+        .fixedSize()
+    }
+
+    /// Bulk tag assignment menu. Supports adding an existing tag, creating a new one inline,
+    /// or clearing every tag from the selected assets.
+    private var tagsMenu: some View {
+        Menu {
+            Menu("Add tag…") {
+                Button {
+                    newTagName = ""
+                    showNewTagSheet = true
+                } label: {
+                    Label("New tag…", systemImage: "plus")
+                }
+                if !viewModel.tagsWithCounts.isEmpty {
+                    Divider()
+                    ForEach(viewModel.tagsWithCounts, id: \.0.id) { tag, _ in
+                        Button(tag.name) {
+                            let ids = viewModel.selectedAssetIDs
+                            Task { try? await viewModel.bulkAddTag(ids: ids, tagName: tag.name) }
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Clear All Tags", role: .destructive) {
+                showClearTagsConfirmation = true
+            }
+        } label: {
+            Label("Tags", systemImage: "tag")
+        }
+        .menuStyle(.borderedButton)
+        .controlSize(.small)
+        .disabled(viewModel.selectedAssetIDs.isEmpty)
+        .fixedSize()
+    }
+
     private var selectModeActionBar: some View {
         HStack(spacing: 0) {
             Text(viewModel.selectedAssetIDs.isEmpty
@@ -216,6 +346,12 @@ struct AssetGridView: View {
             .controlSize(.small)
             .disabled(viewModel.selectedAssetIDs.isEmpty)
             .padding(.trailing, 8)
+
+            projectsMenu
+                .padding(.trailing, 8)
+
+            tagsMenu
+                .padding(.trailing, 8)
 
             Button(role: .destructive) {
                 showDeleteConfirmation = true
@@ -252,8 +388,6 @@ struct AssetGridView: View {
     private var emptyStateView: some View {
         if !viewModel.searchText.isEmpty {
             noSearchResultsState
-        } else if case .collection = viewModel.sourceSelection {
-            emptyCollectionState
         } else {
             emptyLibraryState
         }
@@ -286,19 +420,6 @@ struct AssetGridView: View {
             Button("Clear Search") { viewModel.searchText = "" }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Clear search field")
-        }
-    }
-
-    private var emptyCollectionState: some View {
-        emptyLayout(
-            symbol: "rectangle.stack.badge.plus",
-            title: "This collection is empty",
-            instruction: "Generate or import images and assign them to this collection."
-        ) {
-            Button("Generate", action: onGenerate)
-                .buttonStyle(.borderedProminent)
-                .tint(Color.appAccent)
-                .accessibilityLabel("Open generation panel")
         }
     }
 

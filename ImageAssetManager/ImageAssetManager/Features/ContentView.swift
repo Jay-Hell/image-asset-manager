@@ -37,6 +37,22 @@ struct ContentView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 300)
                         }
+                        if activeTab == .library {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button { showGenerationSheet = true } label: {
+                                    Label("Generate", systemImage: "wand.and.stars")
+                                }
+                                .keyboardShortcut("g", modifiers: .command)
+                                .help("Open Generation Panel (⌘G)")
+                            }
+                            ToolbarItem(placement: .primaryAction) {
+                                Button { libraryVM.showImportSheet = true } label: {
+                                    Label("Import", systemImage: "square.and.arrow.down")
+                                }
+                                .keyboardShortcut("i", modifiers: .command)
+                                .help("Import images (⌘I)")
+                            }
+                        }
                     }
                     .sheet(isPresented: $showGenerationSheet) {
                         GenerationPanelView(viewModel: generationVM)

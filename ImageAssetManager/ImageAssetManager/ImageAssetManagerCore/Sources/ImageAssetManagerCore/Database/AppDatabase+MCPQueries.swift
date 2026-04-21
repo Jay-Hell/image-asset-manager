@@ -8,7 +8,6 @@ public struct MCPAssetSummary: Codable, Sendable {
     public let filename: String
     public let filePath: String
     public let projectID: String?
-    public let collectionID: String?
     public let providerID: String
     public let modelID: String
     public let prompt: String?
@@ -44,24 +43,6 @@ public struct MCPLineageRecord: Codable, Sendable {
     public let influences: [MCPReferenceEntry]
 }
 
-public struct MCPCollectionSummary: Codable, Sendable {
-    public let id: String
-    public let projectID: String
-    public let name: String
-    public let description: String?
-    public let assetCount: Int
-    public let obsidianNotePath: String?
-}
-
-public struct MCPCollectionDetail: Codable, Sendable {
-    public let id: String
-    public let projectID: String
-    public let name: String
-    public let description: String?
-    public let obsidianNotePath: String?
-    public let assets: [MCPAssetSummary]
-}
-
 public struct MCPPromptDetail: Codable, Sendable {
     public let id: String
     public let title: String
@@ -85,7 +66,6 @@ extension AppDatabase {
         tags: [String]?,
         project: String?,
         projects: [String]? = nil,
-        collection: String?,
         provider: String?,
         aspectRatio: String?,
         dateFrom: String?,
@@ -121,7 +101,6 @@ extension AppDatabase {
             conditions.append("a.id IN (SELECT ap.asset_id FROM asset_projects ap JOIN projects pj ON pj.id = ap.project_id WHERE pj.name IN (\(ph)))")
             for name in projectFilterNames { mutableArgs += [name] }
         }
-        if let c = collection { conditions.append("col.name = ?");       mutableArgs += [c] }
         if let pv = provider  { conditions.append("a.provider_id = ?");  mutableArgs += [pv] }
         if let ar = aspectRatio { conditions.append("a.aspect_ratio = ?"); mutableArgs += [ar] }
         if let df = dateFrom  { conditions.append("a.created_at >= ?");  mutableArgs += [df] }
@@ -135,7 +114,6 @@ extension AppDatabase {
             SELECT DISTINCT a.*
             FROM assets a
             LEFT JOIN projects p ON p.id = a.project_id
-            LEFT JOIN collections col ON col.id = a.collection_id
             \(where_)
             ORDER BY a.created_at DESC
             LIMIT ?
@@ -149,7 +127,7 @@ extension AppDatabase {
                 let fp = assetsBase.appending(path: a.filename).path(percentEncoded: false)
                 return MCPAssetSummary(
                     id: a.id, filename: a.filename, filePath: fp,
-                    projectID: a.projectID, collectionID: a.collectionID,
+                    projectID: a.projectID,
                     providerID: a.providerID, modelID: a.modelID,
                     prompt: a.prompt, aspectRatio: a.aspectRatio,
                     width: a.width, height: a.height,
@@ -185,7 +163,7 @@ extension AppDatabase {
             let fp = assetsBase.appending(path: asset.filename).path(percentEncoded: false)
             let summary = MCPAssetSummary(
                 id: asset.id, filename: asset.filename, filePath: fp,
-                projectID: asset.projectID, collectionID: asset.collectionID,
+                projectID: asset.projectID,
                 providerID: asset.providerID, modelID: asset.modelID,
                 prompt: asset.prompt, aspectRatio: asset.aspectRatio,
                 width: asset.width, height: asset.height,
@@ -218,49 +196,6 @@ extension AppDatabase {
         }
     }
 
-    public func mcpListCollections(projectID: String?) async throws -> [MCPCollectionSummary] {
-        try await read { db in
-            var req = ImageCollection.order(Column("name"))
-            if let pid = projectID { req = req.filter(Column("project_id") == pid) }
-            let cols = try req.fetchAll(db)
-            return try cols.map { col in
-                let count = try Asset.filter(Column("collection_id") == col.id).fetchCount(db)
-                return MCPCollectionSummary(
-                    id: col.id, projectID: col.projectID, name: col.name,
-                    description: col.description, assetCount: count,
-                    obsidianNotePath: col.obsidianNotePath
-                )
-            }
-        }
-    }
-
-    public func mcpGetCollection(id: String, libraryURL: URL) async throws -> MCPCollectionDetail? {
-        let assetsBase = libraryURL.appending(path: "assets")
-        return try await read { db in
-            guard let col = try ImageCollection.fetchOne(db, key: id) else { return nil }
-            let assets = try Asset.filter(Column("collection_id") == id)
-                .order(Column("created_at").desc).fetchAll(db)
-            let tagMap = try Self.fetchTagNames(for: assets.map(\.id), db: db)
-            let summaries = assets.map { a in
-                let fp = assetsBase.appending(path: a.filename).path(percentEncoded: false)
-                return MCPAssetSummary(
-                    id: a.id, filename: a.filename, filePath: fp,
-                    projectID: a.projectID, collectionID: a.collectionID,
-                    providerID: a.providerID, modelID: a.modelID,
-                    prompt: a.prompt, aspectRatio: a.aspectRatio,
-                    width: a.width, height: a.height,
-                    estimatedCost: a.estimatedCost, createdAt: a.createdAt,
-                    tags: tagMap[a.id] ?? []
-                )
-            }
-            return MCPCollectionDetail(
-                id: col.id, projectID: col.projectID, name: col.name,
-                description: col.description, obsidianNotePath: col.obsidianNotePath,
-                assets: summaries
-            )
-        }
-    }
-
     public func mcpGetPrompt(id: String, libraryURL: URL) async throws -> MCPPromptDetail? {
         let assetsBase = libraryURL.appending(path: "assets")
         return try await read { db in
@@ -275,7 +210,7 @@ extension AppDatabase {
                 let fp = assetsBase.appending(path: a.filename).path(percentEncoded: false)
                 return MCPAssetSummary(
                     id: a.id, filename: a.filename, filePath: fp,
-                    projectID: a.projectID, collectionID: a.collectionID,
+                    projectID: a.projectID,
                     providerID: a.providerID, modelID: a.modelID,
                     prompt: a.prompt, aspectRatio: a.aspectRatio,
                     width: a.width, height: a.height,

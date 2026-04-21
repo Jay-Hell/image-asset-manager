@@ -13,6 +13,7 @@ struct InspectorPanelView: View {
     var onPromoteVariant: (String, String) -> Void
     var onVariantFamilyChanged: (String) -> Void
     var onProjectsChanged: ([String]) -> Void
+    var onToggleHidden: () -> Void
 
     @State private var editingTags: Bool = false
     @State private var tagEditText: String = ""
@@ -100,6 +101,16 @@ struct InspectorPanelView: View {
                 .accessibilityHint("Opens the export sheet to save a copy")
             #endif
             Spacer()
+            Button {
+                onToggleHidden()
+            } label: {
+                Image(systemName: detail.asset.isHidden ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.bordered)
+            .inspectorButtonStyle()
+            .help(detail.asset.isHidden ? "Unhide this asset" : "Hide this asset")
+            .accessibilityLabel(detail.asset.isHidden ? "Unhide asset" : "Hide asset")
+
             Button(role: .destructive) {
                 showDeleteConfirmation = true
             } label: {

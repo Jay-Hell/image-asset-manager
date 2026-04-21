@@ -43,7 +43,6 @@ public actor GenerationService {
         /// primary (mirrored into `assets.project_id`); subsequent entries add extra memberships.
         /// Empty means no project membership.
         public let projectIDs: [String]
-        public let collectionID: String?
         public let tags: [String]
         public let variantFamilyName: String?
 
@@ -58,7 +57,6 @@ public actor GenerationService {
             height: Int,
             references: [GenerationReference] = [],
             projectIDs: [String] = [],
-            collectionID: String? = nil,
             tags: [String] = [],
             variantFamilyName: String? = nil
         ) {
@@ -70,7 +68,6 @@ public actor GenerationService {
             self.height = height
             self.references = references
             self.projectIDs = projectIDs
-            self.collectionID = collectionID
             self.tags = tags
             self.variantFamilyName = variantFamilyName
         }
@@ -120,7 +117,6 @@ public actor GenerationService {
             filename: filename,
             fileHash: result.data.sha256,
             projectID: request.primaryProjectID,
-            collectionID: request.collectionID,
             providerID: provider.providerID,
             modelID: request.model.id,
             prompt: request.prompt,

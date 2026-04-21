@@ -43,7 +43,7 @@ extension MCPServer {
             maxCostGBP: decimalArg(args["max_cost_gbp"]) ?? GenerationPolicy.BudgetLimits.defaults.maxCostGBP
         )
 
-        // --- 4. Project / collection resolution -------------------------
+        // --- 4. Project resolution --------------------------------------
         // Accept either a singular "project" string (primary) or a "projects" array
         // (first is primary). A mix is allowed — singular acts as the primary when
         // "projects" is absent.
@@ -65,14 +65,6 @@ extension MCPServer {
             }
         }
         let project: Project? = resolvedProjects.first
-
-        let collection: ImageCollection? = try await {
-            guard let raw = args["collection"] as? String, !raw.isEmpty else { return nil }
-            guard let c = try await database.findCollection(idOrName: raw, projectID: project?.id) else {
-                throw MCPGenerateError.notFound("collection '\(raw)'")
-            }
-            return c
-        }()
 
         // --- 5. References ----------------------------------------------
         var notes: [String] = []
@@ -140,7 +132,6 @@ extension MCPServer {
                 height: height,
                 references: references,
                 projectIDs: resolvedProjects.map(\.id),
-                collectionID: collection?.id,
                 tags: tags,
                 variantFamilyName: variantFamily
             )

@@ -51,18 +51,6 @@ struct ImportView: View {
                         }
                     }
 
-                    let filteredCollections = viewModel.allCollections.filter { c in
-                        viewModel.importProjectID == nil || c.projectID == viewModel.importProjectID
-                    }
-                    if !filteredCollections.isEmpty {
-                        Picker("Collection", selection: $viewModel.importCollectionID) {
-                            Text("None").tag(Optional<String>.none)
-                            ForEach(filteredCollections, id: \.id) { coll in
-                                Text(coll.name).tag(Optional(coll.id))
-                            }
-                        }
-                    }
-
                     TextField("Tags (comma-separated)", text: $viewModel.importTags)
                 }
                 .formStyle(.grouped)
@@ -172,7 +160,6 @@ struct ImportView: View {
             try? await viewModel.importAssets(
                 urls: viewModel.importURLs,
                 projectID: viewModel.importProjectID,
-                collectionID: viewModel.importCollectionID,
                 tagNames: tagNames,
                 mode: mode,
                 naming: naming

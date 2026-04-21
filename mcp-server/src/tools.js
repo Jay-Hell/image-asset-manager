@@ -11,7 +11,6 @@ export const TOOLS = [
         tags:         { type: 'array',   items: { type: 'string' }, description: 'Filter to assets that have ALL of these tags' },
         project:      { type: 'string',  description: 'Filter by project name (shorthand — use `projects` for multiple)' },
         projects:     { type: 'array',   items: { type: 'string' }, description: 'Filter to assets that belong to ANY of these projects (by name)' },
-        collection:   { type: 'string',  description: 'Filter by collection name' },
         provider:     { type: 'string',  description: 'Filter by provider ID (e.g. "nano_banana")' },
         aspect_ratio: { type: 'string',  description: 'Filter by aspect ratio (e.g. "16:9")' },
         date_from:    { type: 'string',  description: 'ISO 8601 date lower bound (inclusive), e.g. "2024-01-01"' },
@@ -46,27 +45,6 @@ export const TOOLS = [
     name: 'list_projects',
     description: 'List all projects in the library.',
     inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'list_collections',
-    description: 'List collections, optionally filtered by project ID.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: 'Filter to collections belonging to this project ID' },
-      },
-    },
-  },
-  {
-    name: 'get_collection',
-    description: 'Get collection details including the ordered list of assets it contains.',
-    inputSchema: {
-      type: 'object',
-      required: ['id'],
-      properties: {
-        id: { type: 'string', description: 'Collection UUID' },
-      },
-    },
   },
   {
     name: 'search_prompts',
@@ -162,11 +140,7 @@ export const TOOLS = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Additional project names or UUIDs. The first entry — or `project` if set — becomes the primary; references/collection scoping follow the primary.',
-        },
-        collection: {
-          type: 'string',
-          description: 'Collection name or UUID. Scoped to `project` if both are given.',
+            'Additional project names or UUIDs. The first entry — or `project` if set — becomes the primary; references scoping follows the primary.',
         },
         references: {
           type: 'array',

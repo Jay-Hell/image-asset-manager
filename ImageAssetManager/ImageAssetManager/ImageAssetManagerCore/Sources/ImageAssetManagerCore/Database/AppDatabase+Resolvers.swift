@@ -19,21 +19,4 @@ extension AppDatabase {
                 .fetchOne(db)
         }
     }
-
-    /// Find a collection by UUID or exact name. Optionally scope to a project
-    /// so "Hero Images" in project A is distinguishable from "Hero Images" in
-    /// project B.
-    public func findCollection(idOrName: String, projectID: String? = nil) async throws -> ImageCollection? {
-        try await read { db in
-            if UUID(uuidString: idOrName) != nil,
-               let byID = try ImageCollection.fetchOne(db, key: idOrName) {
-                return byID
-            }
-            var query = ImageCollection.filter(Column("name") == idOrName)
-            if let projectID {
-                query = query.filter(Column("project_id") == projectID)
-            }
-            return try query.fetchOne(db)
-        }
-    }
 }

@@ -9,7 +9,7 @@ struct LibraryBrowserView: View {
 
     var body: some View {
         NavigationSplitView {
-            SourcePanelView(viewModel: viewModel, onGenerate: onGenerate)
+            SourcePanelView(viewModel: viewModel)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } content: {
             AssetGridView(viewModel: viewModel, onGenerate: onGenerate)
@@ -38,6 +38,9 @@ struct LibraryBrowserView: View {
                         },
                         onProjectsChanged: { projectIDs in
                             Task { try? await viewModel.setAssetProjects(assetID: detail.asset.id, projectIDs: projectIDs) }
+                        },
+                        onToggleHidden: {
+                            Task { try? await viewModel.toggleHidden(assetID: detail.asset.id) }
                         }
                     )
                 } else {

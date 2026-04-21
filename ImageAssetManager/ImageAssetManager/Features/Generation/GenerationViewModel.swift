@@ -9,7 +9,7 @@ final class GenerationViewModel {
     var availableProviders: [any ImageProvider] = []
 
     // MARK: - Selection
-    /// Primary project: drives collections, active references, provider defaults.
+    /// Primary project: drives active references and provider defaults.
     /// The generated asset is additionally attached to every ID in `additionalProjectIDs`.
     var selectedProjectID: String?
     var additionalProjectIDs: Set<String> = []
@@ -20,8 +20,6 @@ final class GenerationViewModel {
         rest.remove(primary)
         return [primary] + rest.sorted()
     }
-    var collections: [ImageCollection] = []
-    var selectedCollectionID: String?
     var referenceEntries: [ReferenceEntry] = []
     var confirmedReferenceIDs: Set<String> = []
     var selectedProviderID: String?
@@ -172,10 +170,8 @@ final class GenerationViewModel {
 
     func projectSelectionChanged() async {
         guard let projectID = selectedProjectID else {
-            collections = []
             referenceEntries = []
             confirmedReferenceIDs = []
-            selectedCollectionID = nil
             return
         }
         await loadProjectDependencies(projectID: projectID)
@@ -194,19 +190,13 @@ final class GenerationViewModel {
             if let mid = project.defaultModelID { selectedModelID = mid }
         }
 
-        async let collsResult = (try? database.fetchCollections(projectID: projectID)) ?? []
         async let refsResult = (try? database.fetchActiveReferenceEntries(projectID: projectID)) ?? []
         async let famsResult = (try? database.fetchVariantFamilyNames(projectID: projectID)) ?? []
 
-        let (colls, refs, fams) = await (collsResult, refsResult, famsResult)
-        collections = colls
+        let (refs, fams) = await (refsResult, famsResult)
         referenceEntries = refs
         existingVariantFamilyNames = fams
         confirmedReferenceIDs = []
-        if selectedCollectionID != nil,
-           !colls.contains(where: { $0.id == selectedCollectionID }) {
-            selectedCollectionID = nil
-        }
     }
 
     // MARK: - Generation
@@ -280,7 +270,6 @@ final class GenerationViewModel {
             filename: filename,
             fileHash: imageData.sha256,
             projectID: selectedProjectID,
-            collectionID: selectedCollectionID,
             providerID: currentProvider?.providerID ?? "",
             modelID: effectiveModel?.id ?? "",
             prompt: promptText,

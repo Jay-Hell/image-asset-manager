@@ -13,9 +13,6 @@ extension GenerationViewModel {
         if let pid = asset.projectID {
             selectedProjectID = pid
         }
-        if let cid = asset.collectionID {
-            selectedCollectionID = cid
-        }
         if let prompt = asset.prompt {
             promptText = prompt
         }

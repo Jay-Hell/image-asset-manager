@@ -153,7 +153,6 @@ actor MCPServer {
                 tags: args["tags"] as? [String],
                 project: args["project"] as? String,
                 projects: args["projects"] as? [String],
-                collection: args["collection"] as? String,
                 provider: args["provider"] as? String,
                 aspectRatio: args["aspect_ratio"] as? String,
                 dateFrom: args["date_from"] as? String,
@@ -177,17 +176,6 @@ actor MCPServer {
 
         case "list_projects":
             return try encode(try await database.fetchProjects())
-
-        case "list_collections":
-            let cols = try await database.mcpListCollections(projectID: args["project_id"] as? String)
-            return try encode(cols)
-
-        case "get_collection":
-            let id = try require(args["id"], name: "id")
-            guard let detail = try await database.mcpGetCollection(id: id, libraryURL: libraryURL) else {
-                throw MCPToolError.notFound("collection '\(id)'")
-            }
-            return try encode(detail)
 
         case "search_prompts":
             let prompts = try await database.searchPrompts(

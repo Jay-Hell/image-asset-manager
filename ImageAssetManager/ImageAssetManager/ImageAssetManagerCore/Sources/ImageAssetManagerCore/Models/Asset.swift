@@ -8,7 +8,6 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
     public var filename: String
     public var fileHash: String
     public var projectID: String?
-    public var collectionID: String?
     public var providerID: String
     public var modelID: String
     public var prompt: String?
@@ -29,7 +28,6 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         case id, filename
         case fileHash = "file_hash"
         case projectID = "project_id"
-        case collectionID = "collection_id"
         case providerID = "provider_id"
         case modelID = "model_id"
         case prompt
@@ -51,7 +49,6 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         filename: String,
         fileHash: String,
         projectID: String? = nil,
-        collectionID: String? = nil,
         providerID: String,
         modelID: String,
         prompt: String? = nil,
@@ -72,7 +69,6 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Sendable {
         self.filename = filename
         self.fileHash = fileHash
         self.projectID = projectID
-        self.collectionID = collectionID
         self.providerID = providerID
         self.modelID = modelID
         self.prompt = prompt

@@ -287,6 +287,54 @@ public final class AppDatabase: Sendable {
             """)
         }
 
+        migrator.registerMigration("v7_drop_collections") { db in
+            // SQLite versions prior to 3.35 can't ALTER TABLE DROP COLUMN, so rebuild `assets`
+            // without the collection_id column. Everything that referenced collections is gone.
+            try db.execute(sql: """
+                CREATE TABLE assets_new (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    file_hash TEXT NOT NULL,
+                    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    prompt TEXT,
+                    negative_prompt TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    aspect_ratio TEXT,
+                    seed TEXT,
+                    generation_params TEXT,
+                    estimated_cost REAL,
+                    actual_cost REAL,
+                    created_at TEXT NOT NULL,
+                    imported_at TEXT,
+                    obsidian_embedded INTEGER NOT NULL DEFAULT 0,
+                    is_hidden INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            try db.execute(sql: """
+                INSERT INTO assets_new (
+                    id, filename, file_hash, project_id, provider_id, model_id,
+                    prompt, negative_prompt, width, height, aspect_ratio, seed,
+                    generation_params, estimated_cost, actual_cost, created_at,
+                    imported_at, obsidian_embedded, is_hidden
+                )
+                SELECT
+                    id, filename, file_hash, project_id, provider_id, model_id,
+                    prompt, negative_prompt, width, height, aspect_ratio, seed,
+                    generation_params, estimated_cost, actual_cost, created_at,
+                    imported_at, obsidian_embedded, is_hidden
+                FROM assets
+            """)
+            try db.execute(sql: "DROP TABLE assets")
+            try db.execute(sql: "ALTER TABLE assets_new RENAME TO assets")
+            try db.create(index: "assets_project_id", on: "assets", columns: ["project_id"])
+            try db.create(index: "assets_created_at", on: "assets", columns: ["created_at"])
+
+            try db.execute(sql: "DROP TABLE IF EXISTS collections")
+        }
+
         try migrator.migrate(writer)
     }
 
@@ -313,7 +361,6 @@ public final class AppDatabase: Sendable {
             try db.execute(sql: "DELETE FROM assets")
             try db.execute(sql: "DELETE FROM variants")
             try db.execute(sql: "DELETE FROM reference_sets")
-            try db.execute(sql: "DELETE FROM collections")
             try db.execute(sql: "DELETE FROM projects")
             try db.execute(sql: "DELETE FROM tags")
             try db.execute(sql: "DELETE FROM prompts")

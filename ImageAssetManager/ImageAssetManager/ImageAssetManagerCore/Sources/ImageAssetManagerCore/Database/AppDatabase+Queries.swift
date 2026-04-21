@@ -167,6 +167,87 @@ extension AppDatabase {
         }
     }
 
+    /// Bulk-add a single project to many assets in one write transaction.
+    /// Uses INSERT OR IGNORE so existing memberships are preserved; promotes this project
+    /// to primary only for assets that had no primary yet.
+    public func bulkAddAssetsToProject(assetIDs: [String], projectID: String) async throws {
+        guard !assetIDs.isEmpty else { return }
+        let captured = assetIDs
+        let pid = projectID
+        try await write { db in
+            for aid in captured {
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 0)",
+                    arguments: [aid, pid]
+                )
+                let hasPrimary = try Bool.fetchOne(
+                    db,
+                    sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
+                    arguments: [aid]
+                ) ?? false
+                if !hasPrimary {
+                    try db.execute(
+                        sql: "UPDATE asset_projects SET is_primary = 1 WHERE asset_id = ? AND project_id = ?",
+                        arguments: [aid, pid]
+                    )
+                    try db.execute(
+                        sql: "UPDATE assets SET project_id = ? WHERE id = ?",
+                        arguments: [pid, aid]
+                    )
+                }
+            }
+        }
+    }
+
+    /// Bulk-attach a tag (find-or-created by name) to every asset in one write transaction.
+    /// Existing tag memberships are preserved (INSERT OR IGNORE).
+    public func bulkAddTagToAssets(assetIDs: [String], tagName: String) async throws {
+        let trimmed = tagName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !assetIDs.isEmpty else { return }
+        let captured = assetIDs
+        try await write { db in
+            let tag: Tag
+            if let existing = try Tag.filter(Column("name") == trimmed).fetchOne(db) {
+                tag = existing
+            } else {
+                tag = Tag(name: trimmed)
+                try tag.insert(db)
+            }
+            for aid in captured {
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id) VALUES (?, ?)",
+                    arguments: [aid, tag.id]
+                )
+            }
+        }
+    }
+
+    /// Bulk-remove every tag from the given assets in one write transaction.
+    public func bulkClearTagsForAssets(assetIDs: [String]) async throws {
+        guard !assetIDs.isEmpty else { return }
+        let captured = assetIDs
+        try await write { db in
+            let ph = captured.map { _ in "?" }.joined(separator: ", ")
+            var args: StatementArguments = []
+            for id in captured { args += [id] }
+            try db.execute(sql: "DELETE FROM asset_tags WHERE asset_id IN (\(ph))", arguments: args)
+        }
+    }
+
+    /// Bulk-remove every project membership from the given assets in one write transaction,
+    /// and null out the transitional assets.project_id mirror.
+    public func bulkClearAssetProjects(assetIDs: [String]) async throws {
+        guard !assetIDs.isEmpty else { return }
+        let captured = assetIDs
+        try await write { db in
+            let ph = captured.map { _ in "?" }.joined(separator: ", ")
+            var args: StatementArguments = []
+            for id in captured { args += [id] }
+            try db.execute(sql: "DELETE FROM asset_projects WHERE asset_id IN (\(ph))", arguments: args)
+            try db.execute(sql: "UPDATE assets SET project_id = NULL WHERE id IN (\(ph))", arguments: args)
+        }
+    }
+
     public func removeAssetFromProject(assetID: String, projectID: String) async throws {
         try await write { db in
             try db.execute(
@@ -189,17 +270,6 @@ extension AppDatabase {
                 sql: "UPDATE assets SET project_id = ? WHERE id = ?",
                 arguments: [nextPrimary, assetID]
             )
-        }
-    }
-}
-
-// MARK: - Collections
-extension AppDatabase {
-    public func fetchCollections(projectID: String) async throws -> [ImageCollection] {
-        try await read { db in
-            try ImageCollection
-                .filter(Column("project_id") == projectID)
-                .fetchAll(db)
         }
     }
 }

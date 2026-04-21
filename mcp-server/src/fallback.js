@@ -10,8 +10,6 @@ const OFFLINE_TOOLS = new Set([
   'search_assets',
   'get_asset',
   'list_projects',
-  'list_collections',
-  'get_collection',
   'search_prompts',
   'get_spend',
 ]);
@@ -51,25 +49,6 @@ export function callFallbackTool(name, args, libraryPath) {
         }
       }
       return projects;
-    }
-
-    case 'list_collections': {
-      const seen = new Set();
-      const cols = [];
-      for (const a of assets) {
-        if (a.collectionID && !seen.has(a.collectionID)) {
-          if (!args.project_id || a.projectID === args.project_id) {
-            seen.add(a.collectionID);
-            cols.push({ id: a.collectionID, projectID: a.projectID });
-          }
-        }
-      }
-      return cols;
-    }
-
-    case 'get_collection': {
-      const matching = assets.filter(a => a.collectionID === args.id);
-      return { id: args.id, assets: matching };
     }
 
     case 'search_prompts':

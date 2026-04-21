@@ -3,12 +3,11 @@ import Foundation
 
 // MARK: - Asset search
 extension AppDatabase {
-    /// Filter assets by any combination of projects (union), collection, tag, variant family,
-    /// and full-text search. `projectIDs == nil` means "no project filter"; an empty array
+    /// Filter assets by any combination of projects (union), tag, variant family, and
+    /// full-text search. `projectIDs == nil` means "no project filter"; an empty array
     /// filters to assets with zero project memberships.
     public func searchAssets(
         projectIDs: [String]? = nil,
-        collectionID: String? = nil,
         tagID: String? = nil,
         variantFamilyID: String? = nil,
         searchText: String? = nil,
@@ -26,9 +25,6 @@ extension AppDatabase {
                     request = request.filter(SQL("id IN (SELECT asset_id FROM asset_projects WHERE project_id IN \(pids))"))
                 }
             }
-            if let cid = collectionID {
-                request = request.filter(Column("collection_id") == cid)
-            }
             if let tid = tagID {
                 request = request.filter(SQL("id IN (SELECT asset_id FROM asset_tags WHERE tag_id = \(tid))"))
             }
@@ -40,12 +36,6 @@ extension AppDatabase {
                 request = request.filter(SQL("prompt LIKE \(pattern) OR filename LIKE \(pattern)"))
             }
             return try request.fetchAll(db)
-        }
-    }
-
-    public func fetchAllCollections() async throws -> [ImageCollection] {
-        try await read { db in
-            try ImageCollection.order(Column("name")).fetchAll(db)
         }
     }
 
@@ -176,15 +166,6 @@ extension AppDatabase {
             notedBy: "manual"
         )
         try await write { db in try usage.insert(db) }
-    }
-
-    public func moveAssetToCollection(assetID: String, collectionID: String?) async throws {
-        try await write { db in
-            try db.execute(
-                sql: "UPDATE assets SET collection_id = ? WHERE id = ?",
-                arguments: [collectionID, assetID]
-            )
-        }
     }
 
     public func setTagsForAsset(assetID: String, tagNames: [String]) async throws {

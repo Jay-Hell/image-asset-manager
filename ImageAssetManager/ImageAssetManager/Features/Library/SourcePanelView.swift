@@ -3,7 +3,6 @@ import ImageAssetManagerCore
 
 struct SourcePanelView: View {
     @Bindable var viewModel: LibraryViewModel
-    var onGenerate: () -> Void
 
     var body: some View {
         List(selection: $viewModel.sourceSelection) {
@@ -33,22 +32,8 @@ struct SourcePanelView: View {
             if !viewModel.projects.isEmpty {
                 Section("Projects") {
                     ForEach(viewModel.projects, id: \.id) { project in
-                        let projectCollections = viewModel.allCollections.filter { $0.projectID == project.id }
-                        if projectCollections.isEmpty {
-                            Label(project.name, systemImage: "briefcase")
-                                .tag(SourceSelection.project(project.id))
-                        } else {
-                            DisclosureGroup {
-                                ForEach(projectCollections, id: \.id) { coll in
-                                    Label(coll.name, systemImage: "folder")
-                                        .tag(SourceSelection.collection(coll.id))
-                                        .padding(.leading, 4)
-                                }
-                            } label: {
-                                Label(project.name, systemImage: "briefcase")
-                                    .tag(SourceSelection.project(project.id))
-                            }
-                        }
+                        Label(project.name, systemImage: "briefcase")
+                            .tag(SourceSelection.project(project.id))
                     }
                 }
             }
@@ -96,24 +81,6 @@ struct SourcePanelView: View {
         .listStyle(.sidebar)
         .onChange(of: viewModel.sourceSelection) { _, _ in
             Task { await viewModel.onSourceChanged() }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: onGenerate) {
-                    Label("Generate", systemImage: "wand.and.stars")
-                }
-                .keyboardShortcut("g", modifiers: .command)
-                .help("Open Generation Panel (⌘G)")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    viewModel.showImportSheet = true
-                } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
-                }
-                .keyboardShortcut("i", modifiers: .command)
-                .help("Import images (⌘I)")
-            }
         }
     }
 }

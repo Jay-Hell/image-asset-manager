@@ -104,17 +104,18 @@ All strategies dedupe via an in-flight `usedFilenames: Set<String>` passed by re
 - `v4_variants_nullable_project_and_backfill` — makes `variants.project_id` nullable (orphan assets can now have families) and backfills a solo variant family for every existing asset. Enforces the invariant: **every asset belongs to a variant family of at least one member.** Live creation paths (in-app generation, MCP `generate_image`, import) all funnel through `AppDatabase.attachToVariantFamily(...)` which derives a default family name from the prompt (preferred) or filename when the caller passes no explicit name. `fetchVariantFamilies` filters to families with >1 member, so singletons are invisible bookkeeping — they surface only once a sibling is added.
 - `v5_clients_table_and_project_client_id` — `clients(id, name UNIQUE, created_at)`, plus `projects.client_id` FK (`ON DELETE RESTRICT`). Backfills a Client per distinct non-empty `projects.client_name`. `client_name` column is retained but deprecated; new code reads via `projects.client_id`. Managed in Settings (`ClientsSettingsSection` / `ProjectsSettingsSection`).
 - `v6_asset_projects_join_and_backfill` — `asset_projects(asset_id, project_id, is_primary)` composite-key join. Backfills one primary row per existing `assets.project_id`. **`assets.project_id` is kept as a transitional "primary project" mirror** (first entry of the asset's project set). `searchAssets(projectIDs:)` filters via the join table; `setProjectsForAsset(...)` replaces an asset's set and updates the mirror. MCP `search_assets` and `generate_image` accept both a singular `project` string (shorthand) and a `projects` array — caller's first entry is the primary. `IndexExporter` emits both `project_id` (primary) and `project_ids` / `project_names` arrays so the Node fallback can filter offline.
+- `v7_drop_collections` — drops the `collections` table and the `assets.collection_id` column (SQLite table-rebuild pattern). Collections were unreachable from the UI in practice (no creation path) and overlapped conceptually with projects + tags + variants. The metadata model is now **client → project(s) + tags + variant family**, nothing else.
 
 Query logic is split by feature into extension files — add new queries in the matching extension rather than the core file:
 
-- `AppDatabase+Queries.swift` — general-purpose asset/project/collection CRUD
+- `AppDatabase+Queries.swift` — general-purpose asset/project CRUD
 - `AppDatabase+LibraryQueries.swift` — library browser lookups
 - `AppDatabase+PromptQueries.swift` — prompt library
 - `AppDatabase+ExportQueries.swift` — export presets
 - `AppDatabase+SpendQueries.swift` — spend dashboard aggregates
 - `AppDatabase+RefinementQueries.swift` — Claude prompt refinement history
 - `AppDatabase+MCPQueries.swift` — shapes reads for the MCP server
-- `AppDatabase+Resolvers.swift` — `findProject(idOrName:)` / `findCollection(idOrName:projectID:)` for the name-or-UUID input accepted by `generate_image`
+- `AppDatabase+Resolvers.swift` — `findProject(idOrName:)` for the name-or-UUID input accepted by `generate_image`
 
 `AppDatabase.checkpoint()` flushes the WAL into the main `.db` file and **must be called before moving or copying the library** (see `AppEnvironment.changeLibraryLocation`). It uses `barrierWriteWithoutTransaction` so it can't run inside a transaction.
 
@@ -160,18 +161,18 @@ Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/I
 
 ### MCP Tools
 
-The Swift server exposes **11 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
+The Swift server exposes **9 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
 
-**Read-only** (work offline via `index.json` fallback too): `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `list_collections`, `get_collection`, `get_spend`.
+**Read-only** (work offline via `index.json` fallback too): `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `get_spend`.
 
 **Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate_image`.
 
-`generate_image` takes prompt (string or JSON), quality tier, optional project/collection (name or UUID via `AppDatabase.findProject(idOrName:)` / `findCollection(idOrName:projectID:)`), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at 3), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
+`generate_image` takes prompt (string or JSON), quality tier, optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; accepts `project` singular or `projects` array), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at 3), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
 
 ### Platform Strategy
 
 - macOS: full three-panel layout (Source Panel 220pt | Content Grid | Inspector 280pt), NSToolbar, Swift Charts, MCP server, export presets, full spend dashboard.
-- iPad: two-column `NavigationSplitView`; scoped feature set (library, generation, prompts, collections, variants, read-only spend).
+- iPad: two-column `NavigationSplitView`; scoped feature set (library, generation, prompts, variants, read-only spend).
 - Use `#if os(macOS)` for platform-specific code. Never add iPhone layout code.
 
 ## Key Conventions

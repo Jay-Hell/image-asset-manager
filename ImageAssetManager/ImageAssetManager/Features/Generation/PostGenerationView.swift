@@ -63,12 +63,6 @@ struct PostGenerationView: View {
 
                 Divider().overlay(Color.appBorder)
 
-                formSection("Collection") {
-                    collectionPicker
-                }
-
-                Divider().overlay(Color.appBorder)
-
                 formSection("Variant Family") {
                     variantFamilyPicker
                 }
@@ -207,24 +201,6 @@ struct PostGenerationView: View {
                 .help("Pick an existing family")
             }
         }
-    }
-
-    // MARK: - Collection Picker
-
-    private var collectionPicker: some View {
-        Picker("Collection", selection: $viewModel.selectedCollectionID) {
-            Text("None").tag(nil as String?)
-            ForEach(viewModel.collections, id: \.id) { col in
-                Text(col.name).tag(col.id as String?)
-            }
-        }
-        .pickerStyle(.menu)
-        .font(.system(size: 13))
-        .foregroundStyle(Color.appTextPrimary)
-        .tint(Color.appTextPrimary)
-        .labelsHidden()
-        .padding(6)
-        .background(Color.appSurfaceRaised, in: RoundedRectangle(cornerRadius: 6))
     }
 
     // MARK: - Action Buttons

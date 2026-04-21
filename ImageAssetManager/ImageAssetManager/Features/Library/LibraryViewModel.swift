@@ -5,7 +5,6 @@ enum SourceSelection: Hashable {
     case allAssets
     case client(String)
     case project(String)
-    case collection(String)
     case tag(String)
     case variantFamily(String)
 }
@@ -26,7 +25,6 @@ final class LibraryViewModel {
     // MARK: - Sidebar data
     var projects: [Project] = []
     var clients: [Client] = []
-    var allCollections: [ImageCollection] = []
     var tagsWithCounts: [(Tag, Int)] = []
     var variantFamilies: [(Variant, [(VariantMember, Asset)])] = []
     /// Distinct family names across all projects (including singletons). Used by the
@@ -57,7 +55,6 @@ final class LibraryViewModel {
     var showImportSheet: Bool = false
     var importURLs: [URL] = []
     var importProjectID: String?
-    var importCollectionID: String?
     var importTags: String = ""
     var importMode: ImportMode = {
         let raw = UserDefaults.standard.string(forKey: "importMode") ?? ImportMode.copy.rawValue
@@ -84,15 +81,13 @@ final class LibraryViewModel {
     func loadSidebarData() async {
         async let projsResult = (try? database.fetchProjects()) ?? []
         async let clientsResult = (try? database.fetchClients()) ?? []
-        async let collsResult = (try? database.fetchAllCollections()) ?? []
         async let tagsResult = (try? database.fetchTagsWithCounts()) ?? []
         async let variantsResult = (try? database.fetchVariantFamilies()) ?? []
         async let familyNamesResult = (try? database.fetchAllVariantFamilyNames()) ?? []
 
-        let (projs, cls, colls, tags, variants, familyNames) = await (projsResult, clientsResult, collsResult, tagsResult, variantsResult, familyNamesResult)
+        let (projs, cls, tags, variants, familyNames) = await (projsResult, clientsResult, tagsResult, variantsResult, familyNamesResult)
         projects = projs
         clients = cls
-        allCollections = colls
         tagsWithCounts = tags.filter { $0.1 > 0 }
         variantFamilies = variants
         allVariantFamilyNames = familyNames
@@ -120,10 +115,6 @@ final class LibraryViewModel {
             case .project(let pid):
                 assets = try await database.searchAssets(projectIDs: [pid], searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = try await database.fetchVariantFamilies(projectID: pid)
-
-            case .collection(let cid):
-                assets = try await database.searchAssets(collectionID: cid, searchText: searchArg, showHidden: capturedShowHidden)
-                displayedVariantFamilies = []
 
             case .tag(let tid):
                 assets = try await database.searchAssets(tagID: tid, searchText: searchArg, showHidden: capturedShowHidden)
@@ -182,7 +173,6 @@ final class LibraryViewModel {
     func importAssets(
         urls: [URL],
         projectID: String?,
-        collectionID: String?,
         tagNames: [String],
         mode: ImportMode,
         naming: ImportNaming
@@ -239,7 +229,6 @@ final class LibraryViewModel {
                 filename: filename,
                 fileHash: fileData.sha256,
                 projectID: projectID,
-                collectionID: collectionID,
                 providerID: "imported",
                 modelID: "imported",
                 createdAt: now,
@@ -328,6 +317,77 @@ final class LibraryViewModel {
 
     /// Move an asset to the named variant family (creating the family if needed). Empty names
     /// are rejected upstream — the invariant is every asset has at least one family membership.
+    /// Add a tag (created on the fly if new) to every asset in `ids`.
+    func bulkAddTag(ids: Set<String>, tagName: String) async throws {
+        try await database.bulkAddTagToAssets(assetIDs: Array(ids), tagName: tagName)
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if let sid = selectedAssetID, ids.contains(sid) {
+            await selectAsset(sid)
+        }
+    }
+
+    /// Remove every tag from every asset in `ids`.
+    func bulkClearTags(ids: Set<String>) async throws {
+        try await database.bulkClearTagsForAssets(assetIDs: Array(ids))
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if let sid = selectedAssetID, ids.contains(sid) {
+            await selectAsset(sid)
+        }
+    }
+
+    /// Toggle isHidden for a single asset from the inspector.
+    func toggleHidden(assetID: String) async throws {
+        let asset: Asset?
+        if let found = assets.first(where: { $0.id == assetID }) {
+            asset = found
+        } else {
+            asset = try? await database.fetchAsset(id: assetID)
+        }
+        guard let asset else { return }
+        try await database.setHidden(assetIDs: [assetID], hidden: !asset.isHidden)
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadAssets()
+        if selectedAssetID == assetID {
+            await selectAsset(assetID)
+        }
+    }
+
+    /// Add one project to every asset in `ids`. Existing memberships are preserved.
+    func bulkAddProject(ids: Set<String>, projectID: String) async throws {
+        try await database.bulkAddAssetsToProject(assetIDs: Array(ids), projectID: projectID)
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if let sid = selectedAssetID, ids.contains(sid) {
+            await selectAsset(sid)
+        }
+    }
+
+    /// Remove every project membership from every asset in `ids`.
+    func bulkClearProjects(ids: Set<String>) async throws {
+        try await database.bulkClearAssetProjects(assetIDs: Array(ids))
+        let indexURL = libraryURL.appending(path: "index.json")
+        let assetsDir = libraryURL.appending(path: "assets")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if let sid = selectedAssetID, ids.contains(sid) {
+            await selectAsset(sid)
+        }
+    }
+
     /// Replace an asset's project memberships. Pass an empty array to detach from all projects.
     /// The first ID becomes the primary.
     func setAssetProjects(assetID: String, projectIDs: [String]) async throws {

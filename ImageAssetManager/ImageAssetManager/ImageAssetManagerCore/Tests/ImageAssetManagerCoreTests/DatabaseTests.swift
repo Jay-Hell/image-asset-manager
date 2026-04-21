@@ -18,8 +18,8 @@ struct DatabaseTests {
             try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         }
         let expected = [
-            "asset_references", "asset_tags", "asset_usage", "assets",
-            "collections", "grdb_migrations", "prompt_asset", "prompt_refinements",
+            "asset_projects", "asset_references", "asset_tags", "asset_usage", "assets",
+            "clients", "grdb_migrations", "prompt_asset", "prompt_refinements",
             "prompts", "providers", "projects", "reference_entries",
             "reference_sets", "spend_log", "tags", "variant_members", "variants"
         ]
