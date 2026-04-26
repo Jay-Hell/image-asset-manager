@@ -15,7 +15,6 @@ struct ContentView: View {
     @State private var exportVM: ExportViewModel?
     @State private var spendVM: SpendViewModel?
     @State private var showGenerationSheet: Bool = false
-    @State private var showExportSheet: Bool = false
     @State private var showSettingsSheet: Bool = false
     @State private var assetToExport: Asset?
     @State private var activeTab: AppTab = .library
@@ -73,14 +72,12 @@ struct ContentView: View {
                     .sheet(isPresented: $showSettingsSheet) {
                         NavigationStack { SettingsView() }
                     }
-                    .sheet(isPresented: $showExportSheet, onDismiss: { exportVM.resetExport() }) {
-                        if let asset = assetToExport {
-                            ExportSheetView(
-                                viewModel: exportVM,
-                                asset: asset,
-                                libraryURL: env.libraryURL
-                            )
-                        }
+                    .sheet(item: $assetToExport, onDismiss: { exportVM.resetExport() }) { asset in
+                        ExportSheetView(
+                            viewModel: exportVM,
+                            asset: asset,
+                            libraryURL: env.libraryURL
+                        )
                     }
                     .onChange(of: showGenerationSheet) { _, isShowing in
                         guard !isShowing else { return }
@@ -134,7 +131,6 @@ struct ContentView: View {
                 },
                 onExport: { asset in
                     assetToExport = asset
-                    showExportSheet = true
                 }
             )
         case .prompts:
