@@ -1,0 +1,65 @@
+#if os(macOS)
+import SwiftUI
+import Charts
+import ImageAssetManagerCore
+
+struct SpendByProviderChart: View {
+    let providers: [ProviderSpend]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("By Provider")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.appTextSecondary)
+                .textCase(.uppercase)
+
+            if providers.isEmpty {
+                emptyState
+            } else {
+                chart
+            }
+        }
+    }
+
+    private var chart: some View {
+        Chart(providers) { provider in
+            BarMark(
+                x: .value("Spend", provider.totalEstimated),
+                y: .value("Provider", provider.providerID)
+            )
+            .foregroundStyle(Color.appAccent)
+            .cornerRadius(3)
+            .annotation(position: .trailing, alignment: .leading) {
+                Text(provider.totalEstimated.formatted(.currency(code: "GBP").precision(.fractionLength(4))))
+                    .font(.caption2)
+                    .foregroundStyle(Color.appTextSecondary)
+            }
+        }
+        .chartXAxis {
+            AxisMarks(format: .currency(code: "GBP").precision(.fractionLength(4)))
+        }
+        .chartPlotStyle { area in
+            area.background(Color.appSurface)
+        }
+        .frame(height: max(60, CGFloat(providers.count) * 36))
+    }
+
+    private var emptyState: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.appSurfaceRaised)
+            .frame(height: 80)
+            .overlay {
+                VStack(spacing: 6) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .accessibilityHidden(true)
+                    Text("No data for this period")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appTextSecondary)
+                }
+            }
+    }
+}
+#endif
