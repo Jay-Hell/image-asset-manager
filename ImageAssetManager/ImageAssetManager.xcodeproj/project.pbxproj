@@ -30,7 +30,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				ImageAssetManagerCore,
-				Info.plist,
 			);
 			target = 01F996F02F92263C00495F5C /* ImageAssetManager */;
 		};

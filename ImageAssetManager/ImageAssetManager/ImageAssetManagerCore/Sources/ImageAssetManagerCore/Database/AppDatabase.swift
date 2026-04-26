@@ -389,7 +389,14 @@ public func defaultVariantFamilyName(prompt: String?, filename: String) -> Strin
     let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !trimmedPrompt.isEmpty {
         let condensed = trimmedPrompt.replacingOccurrences(of: "\n", with: " ")
-        return String(condensed.prefix(40)).trimmingCharacters(in: .whitespaces)
+        if condensed.count <= 80 {
+            return condensed.trimmingCharacters(in: .whitespaces)
+        }
+        let hardCap = condensed.prefix(80)
+        if let lastSpace = hardCap.lastIndex(where: { $0.isWhitespace }) {
+            return String(hardCap[..<lastSpace]).trimmingCharacters(in: .whitespaces)
+        }
+        return String(hardCap).trimmingCharacters(in: .whitespaces)
     }
     let base = (filename as NSString).deletingPathExtension
     return base.isEmpty ? "Untitled" : base
