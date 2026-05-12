@@ -23,6 +23,11 @@ image-asset-manager/
       Shared/                           ← Components (KeychainKeyEditor, LocalImage),
                                           Theme
       Resources/                        ← Assets.xcassets
+      Info.plist                        ← target Info.plist (most keys generated via
+                                          INFOPLIST_KEY_* build settings, see pbxproj)
+      PrivacyInfo.xcprivacy             ← App Store privacy manifest (declares
+                                          UserDefaults under reason CA92.1; no tracking,
+                                          no collected data)
       ImageAssetManagerCore/            ← Embedded Swift package (NOT in a top-level Packages/)
         Sources/ImageAssetManagerCore/
           Currency.swift                ← USD→GBP conversion (single source of truth)
@@ -79,7 +84,7 @@ API keys are stored in Keychain only — never in iCloud, providers.json, or cod
 
 **Sandbox entitlements** (`ImageAssetManager.entitlements`) — all four are required, don't remove any:
 
-- `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark.
+- `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark. **Also mirrored by the `ENABLE_USER_SELECTED_FILES = readwrite` build setting in `project.pbxproj` (Debug + Release)** — both must agree, and the build setting overrides the entitlement file at sign time. If migration suddenly fails with a permissions error, check the build setting hasn't reverted to `readonly`.
 - `com.apple.security.network.client` — outbound HTTPS to Google AI Studio and api.anthropic.com. Without this, every URLSession call returns the misleading `NSURLErrorCannotFindHost` ("server not found").
 - `com.apple.security.network.server` — bind the MCP `NWListener` on loopback. Without this, `NWListener(using:)` fails silently and `curl localhost:47821/health` can't connect.
 - iCloud container entitlements (`iCloud.Ionic.ImageAssetManager`) — default library location.
