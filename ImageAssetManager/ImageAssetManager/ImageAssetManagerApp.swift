@@ -22,7 +22,7 @@ struct ImageAssetManagerApp: App {
             ContentView()
                 .environment(env)
                 #if os(macOS)
-                .task { await startMCPServer() }
+                .task { env.mcpController.startIfEnabled() }
                 #endif
         }
         #if os(macOS)
@@ -37,15 +37,6 @@ struct ImageAssetManagerApp: App {
         }
         #endif
     }
-
-    #if os(macOS)
-    @MainActor
-    private func startMCPServer() async {
-        let server = MCPServer(database: env.database, libraryURL: env.libraryURL)
-        ImageAssetManagerDelegate.mcpServer = server
-        await server.start()
-    }
-    #endif
 }
 
 #if os(macOS)

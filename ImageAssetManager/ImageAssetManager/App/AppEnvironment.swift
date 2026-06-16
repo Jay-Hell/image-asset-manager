@@ -1,17 +1,26 @@
 import Foundation
 import ImageAssetManagerCore
 
+@MainActor
 @Observable
 final class AppEnvironment {
     var database: AppDatabase
     var libraryURL: URL
     private(set) var libraryRevision: Int = 0
 
+    #if os(macOS)
+    /// Owns the loopback MCP server; created once and re-pointed on library changes.
+    let mcpController: MCPServerController
+    #endif
+
     private static let bookmarkKey = "libraryLocationBookmark"
 
     init(database: AppDatabase, libraryURL: URL) {
         self.database = database
         self.libraryURL = libraryURL
+        #if os(macOS)
+        self.mcpController = MCPServerController(database: database, libraryURL: libraryURL)
+        #endif
     }
 
     static func make() throws -> AppEnvironment {
@@ -42,6 +51,10 @@ final class AppEnvironment {
 
         database = newDB
         libraryURL = destinationURL
+
+        #if os(macOS)
+        mcpController.updateBackend(database: newDB, libraryURL: destinationURL)
+        #endif
     }
 
     // MARK: - Library clear
