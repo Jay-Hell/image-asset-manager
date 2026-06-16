@@ -1,22 +1,26 @@
 # App Review Notes — Image Asset Manager (macOS)
 
-Paste the relevant parts into **App Store Connect → App Review Information → Notes**, and
-keep the sample API keys in the **Demo Account / attachment** field. This file is kept in
-the repo so the same information is available for every future review.
+Paste the relevant parts into **App Store Connect → App Review Information → Notes**. This
+file holds the *instructions* (the entitlement explanation and verification steps) so they
+are reusable for every future review.
+
+> **SECURITY — never commit real keys.** This repo is public. The real API keys go **only**
+> into the App Store Connect Notes field, never into this file. The placeholders below must
+> stay as placeholders in anything committed or pushed. Keep the live keys in your password
+> manager / App Store Connect, not here.
 
 ---
 
 ## Sample API keys (for the reviewer)
 
-The app generates images and refines prompts via third-party AI APIs. Enter these in
-**Settings** (the app's own Settings window, ⌘,):
+The reviewer enters these in the app's **Settings** window (⌘,) to exercise image
+generation and prompt refinement. Provide the live values **in the App Store Connect Notes
+field** — do not paste them into this file:
 
-- **Nano Banana / Google AI Studio key** (image generation):
-  `<<INSERT CURRENT KEY>>`
-- **Anthropic Claude key** (prompt refinement):
-  `<<INSERT CURRENT KEY>>`
+- **Nano Banana / Google AI Studio key** (image generation): `<<INSERT IN APP STORE CONNECT — NOT HERE>>`
+- **Anthropic Claude key** (prompt refinement): `<<INSERT IN APP STORE CONNECT — NOT HERE>>`
 
-Both keys have spend caps set. They will be rotated after approval — if a future review
+Both keys have spend caps set and will be rotated after approval — if a future review
 reports them as invalid, request fresh keys via Resolution Center.
 
 ---
