@@ -23,6 +23,11 @@ image-asset-manager/
       Shared/                           ← Components (KeychainKeyEditor, LocalImage),
                                           Theme
       Resources/                        ← Assets.xcassets
+      Info.plist                        ← target Info.plist (most keys generated via
+                                          INFOPLIST_KEY_* build settings, see pbxproj)
+      PrivacyInfo.xcprivacy             ← App Store privacy manifest (declares
+                                          UserDefaults under reason CA92.1; no tracking,
+                                          no collected data)
       ImageAssetManagerCore/            ← Embedded Swift package (NOT in a top-level Packages/)
         Sources/ImageAssetManagerCore/
           Currency.swift                ← USD→GBP conversion (single source of truth)
@@ -51,9 +56,9 @@ image-asset-manager/
 ### Layer Responsibilities
 
 - **ImageAssetManagerCore** — all business logic, data access (GRDB), provider abstraction, API clients. No SwiftUI imports. Swift 6 language mode; use `Sendable`, actors, and `async/await` throughout.
-- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene. Holds a `libraryRevision: Int` counter that view-models watch via `.task(id: env.libraryRevision)` to force a rebuild after destructive operations (library location change, clear library).
+- **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@MainActor @Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene. Holds a `libraryRevision: Int` counter that view-models watch via `.task(id: env.libraryRevision)` to force a rebuild after destructive operations (library location change, clear library), and (macOS) owns the `MCPServerController`. It is `@MainActor` because it constructs the main-actor-isolated controller.
 - **MCP server** — two-tier setup:
-  - **Swift HTTP server** (`App/MCPServer.swift` + `App/MCPServer+Generate.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Reads via `AppDatabase+MCPQueries.swift`, writes via `GenerationService` for image generation. `database` and `libraryURL` are internal (not private) so extension files can see them.
+  - **Swift HTTP server** (`App/MCPServer.swift` + `App/MCPServer+Generate.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`. Reads via `AppDatabase+MCPQueries.swift`, writes via `GenerationService` for image generation. `database` and `libraryURL` are internal (not private) so extension files can see them. **Lifecycle is owned by `MCPServerController` (`App/MCPServerController.swift`, `@MainActor @Observable`)** — not started inline by the app. The controller persists an `isEnabled` flag (`UserDefaults` key `mcpServerEnabled`, **defaults on**), exposes observable `status` (`MCPServerStatus`) and a bounded `MCPActivityLog` (Core), and re-points the server at a new DB on `changeLibraryLocation`. The server reports back via two `@Sendable` callbacks (`onStatus`, `onRequest`) that hop to the main actor. **This opt-in toggle + visible status + "Test Connection" self-test (`MCPServerSettingsSection`) exist to give the `com.apple.security.network.server` entitlement demonstrable in-app functionality for App Review** — see `docs/app-review-notes.md`. The controller keeps `ImageAssetManagerDelegate.mcpServer` in sync so the existing `applicationWillTerminate` graceful-stop path is unchanged.
   - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools (`generate_image`, `mark_asset_used`, prompt tools) return a "requires the app to be running" error.
 
 ### Storage
@@ -79,9 +84,9 @@ API keys are stored in Keychain only — never in iCloud, providers.json, or cod
 
 **Sandbox entitlements** (`ImageAssetManager.entitlements`) — all four are required, don't remove any:
 
-- `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark.
+- `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark. **Also mirrored by the `ENABLE_USER_SELECTED_FILES = readwrite` build setting in `project.pbxproj` (Debug + Release)** — both must agree, and the build setting overrides the entitlement file at sign time. If migration suddenly fails with a permissions error, check the build setting hasn't reverted to `readonly`.
 - `com.apple.security.network.client` — outbound HTTPS to Google AI Studio and api.anthropic.com. Without this, every URLSession call returns the misleading `NSURLErrorCannotFindHost` ("server not found").
-- `com.apple.security.network.server` — bind the MCP `NWListener` on loopback. Without this, `NWListener(using:)` fails silently and `curl localhost:47821/health` can't connect.
+- `com.apple.security.network.server` — bind the MCP `NWListener` on loopback. Without this, `NWListener(using:)` fails silently and `curl localhost:47821/health` can't connect. **App Review (2.4.5(i)) flagged this entitlement as lacking matching functionality** because the only client is Claude Code (external, untestable by the reviewer). The justification is the MCP Server Settings panel (`MCPServerSettingsSection`): a user toggle, live "Running on 127.0.0.1:47821" status, and a "Test Connection" button that round-trips the loopback server in-app. Keep that panel — it's what makes this entitlement defensible. Reviewer crib sheet: `docs/app-review-notes.md`.
 - iCloud container entitlements (`iCloud.Ionic.ImageAssetManager`) — default library location.
 
 ### Import File Naming

@@ -39,6 +39,11 @@ struct SettingsView: View {
                 removalMessage: "The Anthropic API key will be removed from Keychain."
             )
 
+            // MARK: MCP Server (Claude Code integration)
+            #if os(macOS)
+            MCPServerSettingsSection()
+            #endif
+
             // MARK: Clients
             ClientsSettingsSection()
 

@@ -10,9 +10,21 @@ actor MCPServer {
     let database: AppDatabase
     let libraryURL: URL
 
-    init(database: AppDatabase, libraryURL: URL) {
+    /// Reports listener lifecycle so the Settings panel can show live status.
+    private let onStatus: @Sendable (MCPServerStatus) -> Void
+    /// Reports each handled request so the Settings panel can show activity.
+    private let onRequest: @Sendable (MCPRequestLogEntry) -> Void
+
+    init(
+        database: AppDatabase,
+        libraryURL: URL,
+        onStatus: @escaping @Sendable (MCPServerStatus) -> Void = { _ in },
+        onRequest: @escaping @Sendable (MCPRequestLogEntry) -> Void = { _ in }
+    ) {
         self.database = database
         self.libraryURL = libraryURL
+        self.onStatus = onStatus
+        self.onRequest = onRequest
     }
 
     func start() {
@@ -26,12 +38,20 @@ actor MCPServer {
             lsn = try NWListener(using: params)
         } catch {
             print("[MCPServer] Failed to create listener on port \(MCPServer.port): \(error)")
+            onStatus(.failed(error.localizedDescription))
             return
         }
+        let report = onStatus
         lsn.stateUpdateHandler = { state in
             switch state {
-            case .ready:   print("[MCPServer] Listening on localhost:\(MCPServer.port)")
-            case .failed(let e): print("[MCPServer] Listener failed: \(e)")
+            case .ready:
+                print("[MCPServer] Listening on localhost:\(MCPServer.port)")
+                report(.running(port: MCPServer.port))
+            case .failed(let e):
+                print("[MCPServer] Listener failed: \(e)")
+                report(.failed(e.localizedDescription))
+            case .cancelled:
+                report(.stopped)
             default: break
             }
         }
@@ -46,6 +66,7 @@ actor MCPServer {
     func stop() {
         listener?.cancel()
         listener = nil
+        onStatus(.stopped)
     }
 
     // MARK: - Connection handling
@@ -54,18 +75,27 @@ actor MCPServer {
         do {
             let (method, path, body) = try await readRequest(conn)
             let responseData: Data
+            var tool: String?
             if method == "GET", path == "/health" {
                 responseData = Data(#"{"status":"ok"}"#.utf8)
             } else if method == "POST", path == "/tool" {
+                tool = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["name"] as? String
                 responseData = await dispatchTool(body: body)
             } else {
                 responseData = encodeError("Not found: \(method) \(path)")
             }
+            let ok = (try? JSONSerialization.jsonObject(with: responseData) as? [String: Any])?["error"] == nil
+            log(method: method, path: path, tool: tool, ok: ok)
             await send(responseData, to: conn)
         } catch {
+            log(method: "?", path: "?", tool: nil, ok: false)
             await send(encodeError(error.localizedDescription), to: conn)
         }
         conn.cancel()
+    }
+
+    private func log(method: String, path: String, tool: String?, ok: Bool) {
+        onRequest(MCPRequestLogEntry(timestamp: Date(), method: method, path: path, tool: tool, ok: ok))
     }
 
     private func readRequest(_ conn: NWConnection) async throws -> (String, String, Data) {
