@@ -166,11 +166,15 @@ Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/I
 
 ### MCP Tools
 
-The Swift server exposes **9 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
+The Swift server exposes **10 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
 
 **Read-only** (work offline via `index.json` fallback too): `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `get_spend`.
 
-**Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate_image`.
+**Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate_image`, `upload_asset`.
+
+**Per-tool timeouts.** `appClient.js` defaults to 8 s but consults `TOOL_TIMEOUTS_MS` first — `upload_asset` 180 s, `generate_image` 300 s. Any tool outlasting a database read needs an entry; without one the proxy aborts while the app carries on, so the caller sees a failure whose side effect still happened.
+
+`upload_asset` sends one asset's bytes to a URL a receiving system has already minted (Deliverable Orchestration's `artefact_asset_upload_url`), so image bytes never enter the calling model's context — only a receipt returns. The app performs the PUT rather than the Node proxy for two reasons: the proxy runs as a child of Claude Code and is refused at `open()` by macOS TCC on the iCloud container, and only the app knows the live library location (`LIBRARY_PATH` is an offline fallback and can be stale). Logic lives in `ImageAssetManagerCore/Network/AssetUploader.swift` — HTTPS only, no credentials in the URL, default port only, and an allowlist of `portal.ionicconsulting.co.uk` plus the `.r2.cloudflarestorage.com` suffix (leading dot deliberate — it forces a label boundary, so `notr2.cloudflarestorage.com` fails). The destination is validated **before** the file is read: the caller is a model that may have just read untrusted text, so an unguarded version of this tool is an exfiltration primitive. 10 MB cap mirrors the portal's `MAX_ASSET_BYTES`. Usage is not recorded — `mark_asset_used` stays a separate call.
 
 `generate_image` takes prompt (string or JSON), quality tier, optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; accepts `project` singular or `projects` array), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at 3), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
 

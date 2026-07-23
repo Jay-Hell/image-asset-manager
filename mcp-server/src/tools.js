@@ -93,6 +93,24 @@ export const TOOLS = [
     },
   },
   {
+    name: 'upload_asset',
+    description:
+      'Upload an asset\'s image bytes from the library to a URL that a receiving system has already minted — currently the Deliverable Orchestration portal\'s artefact asset flow. ' +
+      'The app reads the file and performs the PUT itself, so the bytes never pass through this conversation; only a receipt (size, content type, HTTP status) comes back. ' +
+      'The destination is restricted to known Ionic upload hosts over HTTPS — an arbitrary URL will be refused. ' +
+      'Get `upload_url` from the receiving system first (for DO: artefact_asset_upload_url), then call its finalise step afterwards. ' +
+      'Does not record usage — call mark_asset_used separately if the asset has landed in a deliverable. ' +
+      'Requires the app to be running.',
+    inputSchema: {
+      type: 'object',
+      required: ['id', 'upload_url'],
+      properties: {
+        id:         { type: 'string', description: 'Asset UUID to upload' },
+        upload_url: { type: 'string', description: 'HTTPS upload target minted by the receiving system. Must be an allowed Ionic upload host.' },
+      },
+    },
+  },
+  {
     name: 'generate_image',
     description:
       'Generate one or more images via the Image Asset Manager\'s active provider, save them as library assets, and return their IDs + file paths. ' +

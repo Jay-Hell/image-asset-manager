@@ -210,6 +210,28 @@ actor MCPServer {
             )
             return ["success": true, "assetID": id] as [String: Any]
 
+        case "upload_asset":
+            let id = try require(args["id"], name: "id")
+            let uploadURL = try require(args["upload_url"], name: "upload_url")
+            guard let detail = try await database.mcpGetAssetDetail(id: id, libraryURL: libraryURL) else {
+                throw MCPToolError.notFound("asset '\(id)'")
+            }
+            // The app reads its own container and PUTs the bytes itself — they never travel back
+            // through the proxy, and therefore never through the calling model's context.
+            let receipt = try await AssetUploader().upload(
+                fileAt: URL(filePath: detail.asset.filePath),
+                to: uploadURL
+            )
+            return [
+                "success": true,
+                "assetID": id,
+                "filename": detail.asset.filename,
+                "bytes": receipt.bytes,
+                "contentType": receipt.contentType,
+                "status": receipt.status,
+                "host": receipt.host,
+            ] as [String: Any]
+
         case "generate_image":
             return try await handleGenerateImage(args: args)
 
