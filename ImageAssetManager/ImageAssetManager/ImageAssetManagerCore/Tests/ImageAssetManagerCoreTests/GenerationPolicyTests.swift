@@ -187,3 +187,38 @@ struct QualityRoutingTests {
         #expect(r.modelID == NanaBananaProvider.ModelID.imagenFast)
     }
 }
+
+
+@Suite("GenerationPolicy.ClampLimits")
+struct ClampLimitsTests {
+
+    @Test func withinCeilingPassesThroughUnclamped() {
+        let requested = GenerationPolicy.BudgetLimits(maxImages: 10, maxCostGBP: Decimal(string: "1.00")!)
+        let result = GenerationPolicy.clampLimits(requested: requested, ceiling: GenerationPolicy.mcpCeilingDefaults)
+        #expect(result.limits == requested)
+        #expect(!result.clampedImages && !result.clampedCost)
+    }
+
+    @Test func costAboveCeilingIsClamped() {
+        let requested = GenerationPolicy.BudgetLimits(maxImages: 10, maxCostGBP: Decimal(999))
+        let result = GenerationPolicy.clampLimits(requested: requested, ceiling: GenerationPolicy.mcpCeilingDefaults)
+        #expect(result.limits.maxCostGBP == GenerationPolicy.mcpCeilingDefaults.maxCostGBP)
+        #expect(result.clampedCost)
+        #expect(!result.clampedImages)
+    }
+
+    @Test func imagesAboveCeilingIsClamped() {
+        let requested = GenerationPolicy.BudgetLimits(maxImages: 1000, maxCostGBP: Decimal(string: "0.50")!)
+        let result = GenerationPolicy.clampLimits(requested: requested, ceiling: GenerationPolicy.mcpCeilingDefaults)
+        #expect(result.limits.maxImages == GenerationPolicy.mcpCeilingDefaults.maxImages)
+        #expect(result.clampedImages)
+        #expect(!result.clampedCost)
+    }
+
+    @Test func bothAboveCeilingBothClamped() {
+        let requested = GenerationPolicy.BudgetLimits(maxImages: 1000, maxCostGBP: Decimal(999))
+        let result = GenerationPolicy.clampLimits(requested: requested, ceiling: GenerationPolicy.mcpCeilingDefaults)
+        #expect(result.limits == GenerationPolicy.mcpCeilingDefaults)
+        #expect(result.clampedImages && result.clampedCost)
+    }
+}

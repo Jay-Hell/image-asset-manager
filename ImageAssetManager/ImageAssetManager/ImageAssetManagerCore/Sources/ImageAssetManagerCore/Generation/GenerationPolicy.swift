@@ -38,6 +38,39 @@ public enum GenerationPolicy {
         return subtotal
     }
 
+    // MARK: - Budget clamping (server-held ceiling)
+
+    /// The app-held hard ceiling for MCP calls. Caller-supplied `max_images` /
+    /// `max_cost_gbp` are clamped to this — the server owns the guardrail, not
+    /// the caller. 50 images / £5.00 unless overridden in app settings.
+    public static let mcpCeilingDefaults = BudgetLimits(
+        maxImages: 50, maxCostGBP: Decimal(string: "5.00")!)
+
+    public struct ClampedLimits: Sendable, Equatable {
+        public let limits: BudgetLimits
+        public let clampedImages: Bool
+        public let clampedCost: Bool
+
+        public init(limits: BudgetLimits, clampedImages: Bool, clampedCost: Bool) {
+            self.limits = limits
+            self.clampedImages = clampedImages
+            self.clampedCost = clampedCost
+        }
+    }
+
+    /// Clamp caller-requested limits to the app-held ceiling. Pure — the MCP
+    /// handler supplies the ceiling from settings and reports any clamp in the
+    /// response notes so agents learn the real bound instead of guessing.
+    public static func clampLimits(requested: BudgetLimits, ceiling: BudgetLimits) -> ClampedLimits {
+        let images = min(requested.maxImages, ceiling.maxImages)
+        let cost = min(requested.maxCostGBP, ceiling.maxCostGBP)
+        return ClampedLimits(
+            limits: BudgetLimits(maxImages: images, maxCostGBP: cost),
+            clampedImages: images < requested.maxImages,
+            clampedCost: cost < requested.maxCostGBP
+        )
+    }
+
     // MARK: - Reference merging
 
     public struct MergedReferences: Sendable {
