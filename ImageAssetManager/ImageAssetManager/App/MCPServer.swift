@@ -7,15 +7,47 @@ actor MCPServer {
     static let port: UInt16 = 47821
 
     private var listener: NWListener?
+    private var authToken: String = ""
     let database: AppDatabase
     let libraryURL: URL
+
+    /// Requests larger than this are rejected outright (413) before buffering.
+    private static let maxBodyBytes = 50_000_000
 
     init(database: AppDatabase, libraryURL: URL) {
         self.database = database
         self.libraryURL = libraryURL
     }
 
+    /// Where the bearer token lives. App Support, NOT the library folder — the
+    /// library syncs to iCloud and the token must never leave this Mac.
+    static func tokenFileURL() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "ImageAssetManager")
+            .appending(path: "mcp-token")
+    }
+
+    /// Mint a fresh random token on every server start and write it 0600 for
+    /// the Node proxy to pick up. Loopback alone is not an auth boundary: any
+    /// local process — or a web page POSTing text/plain, which needs no CORS
+    /// preflight — can reach this port. The token is what makes /tool private.
+    private func prepareAuthToken() {
+        let bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max) }
+        authToken = bytes.map { String(format: "%02x", $0) }.joined()
+        let url = MCPServer.tokenFileURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(authToken.utf8).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            print("[MCPServer] Failed to write mcp-token: \(error)")
+        }
+    }
+
     func start() {
+        prepareAuthToken()
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: .init("127.0.0.1"),
@@ -52,23 +84,56 @@ actor MCPServer {
 
     private func handle(_ conn: NWConnection) async {
         do {
-            let (method, path, body) = try await readRequest(conn)
-            let responseData: Data
+            let (method, path, headers, body) = try await readRequest(conn)
             if method == "GET", path == "/health" {
-                responseData = Data(#"{"status":"ok"}"#.utf8)
+                await send(Data(#"{"status":"ok"}"#.utf8), to: conn)
             } else if method == "POST", path == "/tool" {
-                responseData = await dispatchTool(body: body)
+                if let rejection = gate(headers: headers) {
+                    await send(rejection.body, status: rejection.status, to: conn)
+                } else {
+                    await send(await dispatchTool(body: body), to: conn)
+                }
             } else {
-                responseData = encodeError("Not found: \(method) \(path)")
+                await send(encodeError("Not found: \(method) \(path)"), status: 404, to: conn)
             }
-            await send(responseData, to: conn)
         } catch {
-            await send(encodeError(error.localizedDescription), to: conn)
+            await send(encodeError(error.localizedDescription), status: 500, to: conn)
         }
         conn.cancel()
     }
 
-    private func readRequest(_ conn: NWConnection) async throws -> (String, String, Data) {
+    /// Auth + origin gates for /tool. Returns nil when the request may proceed.
+    private func gate(headers: [String: String]) -> (status: Int, body: Data)? {
+        // Bearer token — the actual auth boundary (see prepareAuthToken).
+        let supplied = (headers["authorization"] ?? "")
+            .replacingOccurrences(of: "Bearer ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard !authToken.isEmpty, constantTimeEquals(supplied, authToken) else {
+            return (401, encodeError("unauthorized"))
+        }
+        // Host allowlist — DNS-rebinding defence.
+        let host = headers["host"] ?? ""
+        guard host == "127.0.0.1:\(MCPServer.port)" || host == "localhost:\(MCPServer.port)" else {
+            return (403, encodeError("forbidden: bad Host header"))
+        }
+        // Content-Type must be JSON — a text/plain POST is the no-preflight
+        // browser drive-by shape; a legitimate caller never sends it.
+        let contentType = (headers["content-type"] ?? "").lowercased()
+        guard contentType.hasPrefix("application/json") else {
+            return (415, encodeError("Content-Type must be application/json"))
+        }
+        return nil
+    }
+
+    private func constantTimeEquals(_ a: String, _ b: String) -> Bool {
+        let ab = Array(a.utf8), bb = Array(b.utf8)
+        guard ab.count == bb.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<ab.count { diff |= ab[i] ^ bb[i] }
+        return diff == 0
+    }
+
+    private func readRequest(_ conn: NWConnection) async throws -> (String, String, [String: String], Data) {
         var buffer = Data()
         let sep = Data("\r\n\r\n".utf8)
 
@@ -88,12 +153,17 @@ actor MCPServer {
         let method = reqParts.count > 0 ? reqParts[0] : "GET"
         let path   = reqParts.count > 1 ? reqParts[1] : "/"
 
-        var contentLength = 0
+        var headers: [String: String] = [:]
         for line in lines.dropFirst() {
-            if line.lowercased().hasPrefix("content-length:") {
-                contentLength = Int(line.dropFirst("content-length:".count)
-                    .trimmingCharacters(in: .whitespaces)) ?? 0
-            }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon]).lowercased()
+            let value = String(line[line.index(after: colon)...])
+                .trimmingCharacters(in: .whitespaces)
+            headers[key] = value
+        }
+        let contentLength = Int(headers["content-length"] ?? "") ?? 0
+        guard contentLength <= MCPServer.maxBodyBytes else {
+            throw MCPToolError.requestTooLarge(contentLength)
         }
 
         var body = Data(buffer[sepRange.upperBound...])
@@ -104,7 +174,7 @@ actor MCPServer {
             body.append(extra)
         }
 
-        return (method, path, body.prefix(contentLength))
+        return (method, path, headers, body.prefix(contentLength))
     }
 
     private func chunk(from conn: NWConnection, min: Int, max: Int) async throws -> Data {
@@ -116,8 +186,11 @@ actor MCPServer {
         }
     }
 
-    private func send(_ json: Data, to conn: NWConnection) async {
-        let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nConnection: close\r\n\r\n"
+    private func send(_ json: Data, status: Int = 200, to conn: NWConnection) async {
+        let reasons: [Int: String] = [200: "OK", 401: "Unauthorized", 403: "Forbidden",
+                                      404: "Not Found", 413: "Payload Too Large",
+                                      415: "Unsupported Media Type", 500: "Internal Server Error"]
+        let header = "HTTP/1.1 \(status) \(reasons[status] ?? "Error")\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nConnection: close\r\n\r\n"
         var response = Data(header.utf8)
         response.append(json)
         await withCheckedContinuation { cont in
@@ -261,12 +334,14 @@ private enum MCPToolError: Error, LocalizedError {
     case missingParam(String)
     case notFound(String)
     case unknownTool(String)
+    case requestTooLarge(Int)
 
     var errorDescription: String? {
         switch self {
         case .missingParam(let p): return "Missing required parameter: \(p)"
         case .notFound(let what):  return "Not found: \(what)"
         case .unknownTool(let n):  return "Unknown tool: \(n)"
+        case .requestTooLarge(let n): return "Request body too large: \(n) bytes"
         }
     }
 }

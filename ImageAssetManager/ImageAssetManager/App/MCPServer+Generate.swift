@@ -37,11 +37,16 @@ extension MCPServer {
         }()
         let (width, height) = resolveDimensions(for: aspect)
 
-        // --- 3. Budget defaults -----------------------------------------
-        let budget = GenerationPolicy.BudgetLimits(
+        // --- 3. Budget defaults, clamped to the app-held ceiling ---------
+        // The caller may LOWER the limits but never raise them past the ceiling:
+        // an autonomous agent passing max_cost_gbp: 999 gets the ceiling, and a
+        // note saying so. The ceiling is the server's, not the prompt's.
+        let requested = GenerationPolicy.BudgetLimits(
             maxImages: (args["max_images"] as? Int) ?? GenerationPolicy.BudgetLimits.defaults.maxImages,
             maxCostGBP: decimalArg(args["max_cost_gbp"]) ?? GenerationPolicy.BudgetLimits.defaults.maxCostGBP
         )
+        let clamp = GenerationPolicy.clampLimits(requested: requested, ceiling: MCPServer.budgetCeiling())
+        let budget = clamp.limits
 
         // --- 4. Project resolution --------------------------------------
         // Accept either a singular "project" string (primary) or a "projects" array
@@ -68,6 +73,12 @@ extension MCPServer {
 
         // --- 5. References ----------------------------------------------
         var notes: [String] = []
+        if clamp.clampedImages {
+            notes.append("max_images clamped to \(budget.maxImages) (app setting)")
+        }
+        if clamp.clampedCost {
+            notes.append("max_cost_gbp clamped to \(format(budget.maxCostGBP)) (app setting)")
+        }
         let references = try await resolveReferences(
             args: args,
             project: project,
@@ -157,6 +168,21 @@ extension MCPServer {
             ] as [String: Any],
             "notes": notes,
         ] as [String: Any]
+    }
+
+    // MARK: - Budget ceiling
+
+    /// The app-held hard ceiling for one MCP generate call. Overridable via
+    /// `defaults write` (mcpMaxImagesPerCall / mcpMaxCostPerCallGBP) until a
+    /// Settings surface ships; absent overrides use GenerationPolicy defaults
+    /// (50 images / £5.00).
+    static func budgetCeiling(defaults: UserDefaults = .standard) -> GenerationPolicy.BudgetLimits {
+        let images = defaults.object(forKey: "mcpMaxImagesPerCall") as? Int
+        let cost = defaults.object(forKey: "mcpMaxCostPerCallGBP") as? Double
+        return GenerationPolicy.BudgetLimits(
+            maxImages: images ?? GenerationPolicy.mcpCeilingDefaults.maxImages,
+            maxCostGBP: cost.map { Decimal($0) } ?? GenerationPolicy.mcpCeilingDefaults.maxCostGBP
+        )
     }
 
     // MARK: - Reference resolution
