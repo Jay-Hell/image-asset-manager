@@ -10,17 +10,28 @@ import { join } from 'node:path';
 const APP_URL = 'http://127.0.0.1:47821';
 const DEFAULT_TIMEOUT_MS = 8000;
 
-// The app mints a fresh bearer token on every launch and writes it here (0600).
-// Read it per call, not at startup, so an app restart mid-session just works.
-const TOKEN_PATH = process.env.MCP_TOKEN_PATH
-  ?? join(homedir(), 'Library', 'Application Support', 'ImageAssetManager', 'mcp-token');
+// The app mints a fresh bearer token on every launch and writes it (0600) to
+// its Application Support dir. The app is SANDBOXED, so that resolves inside
+// its container — the plain ~/Library path is kept as a fallback in case the
+// sandbox is ever dropped. Read per call, not at startup, so an app restart
+// mid-session just works.
+const TOKEN_PATHS = process.env.MCP_TOKEN_PATH
+  ? [process.env.MCP_TOKEN_PATH]
+  : [
+      join(homedir(), 'Library', 'Containers', 'Ionic.ImageAssetManager', 'Data',
+           'Library', 'Application Support', 'ImageAssetManager', 'mcp-token'),
+      join(homedir(), 'Library', 'Application Support', 'ImageAssetManager', 'mcp-token'),
+    ];
 
 function readToken() {
-  try {
-    return readFileSync(TOKEN_PATH, 'utf8').trim();
-  } catch {
-    return null;
+  for (const path of TOKEN_PATHS) {
+    try {
+      return readFileSync(path, 'utf8').trim();
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
 }
 
 // Tools that legitimately outlast a database read. Without an entry here the proxy aborts while the
