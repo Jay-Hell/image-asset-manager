@@ -96,6 +96,8 @@ actor MCPServer {
             } else {
                 await send(encodeError("Not found: \(method) \(path)"), status: 404, to: conn)
             }
+        } catch MCPToolError.requestTooLarge(let bytes) {
+            await send(encodeError("Request body too large: \(bytes) bytes"), status: 413, to: conn)
         } catch {
             await send(encodeError(error.localizedDescription), status: 500, to: conn)
         }
