@@ -50,8 +50,11 @@ public enum SVGDocument {
         return Double(value).flatMap(positiveInt)
     }
 
+    /// Largest side taken as a real size. Bounded before converting: `Int(1e19)` traps.
+    static let maxDimension: Double = 100_000
+
     private static func positiveInt(_ value: Double) -> Int? {
-        guard value.isFinite, value > 0 else { return nil }
+        guard value.isFinite, value > 0, value <= maxDimension else { return nil }
         return Int(value.rounded())
     }
 

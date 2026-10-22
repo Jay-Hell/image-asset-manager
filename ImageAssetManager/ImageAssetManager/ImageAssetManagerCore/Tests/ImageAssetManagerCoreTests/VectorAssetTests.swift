@@ -79,6 +79,21 @@ struct SVGDimensionTests {
         #expect(d.width == 24 && d.height == 24)
     }
 
+    /// 1e19 is past `Int.max` (about 9.2e18): converting it traps. Anything over 100 000 is
+    /// absurd for a drawing and is no size at all.
+    @Test func anAbsurdViewBoxIsNoSizeAndDoesNotTrap() {
+        let huge = SVGDocument.dimensions(of: svg(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e19 10"/>"#))
+        #expect(huge.width == nil && huge.height == nil)
+        let overCap = SVGDocument.dimensions(of: svg(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100001 10"/>"#))
+        #expect(overCap.width == nil && overCap.height == nil)
+        let atCap = SVGDocument.dimensions(of: svg(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100000 100000"/>"#))
+        #expect(atCap.width == 100000 && atCap.height == 100000)
+        let attributes = SVGDocument.dimensions(of: svg(#"<svg xmlns="http://www.w3.org/2000/svg" width="1e300px" height="-4"/>"#))
+        #expect(attributes.width == nil && attributes.height == nil)
+        let notFinite = SVGDocument.dimensions(of: svg(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 inf nan" width="12" height="7"/>"#))
+        #expect(notFinite.width == 12 && notFinite.height == 7)
+    }
+
     @Test func notAnSVGIsNil() {
         let html = SVGDocument.dimensions(of: svg(#"<html width="10" height="10"></html>"#))
         #expect(html.width == nil && html.height == nil)
@@ -115,6 +130,16 @@ struct AssetStoreTests {
         #expect(try Data(contentsOf: stored.fileURL) == given)
         #expect(stored.mediaType == .png)
         #expect(stored.width == 3 && stored.height == 2)
+    }
+
+    @Test func anSVGWithAnAbsurdViewBoxIsStoredWithNoSize() throws {
+        let library = try tempDirectory("store-huge")
+        let given = svg(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1e19 10"/>"#)
+
+        let stored = try AssetStore.store(given, mimeType: "image/svg+xml", assetID: "H1", libraryURL: library)
+
+        #expect(stored.width == nil && stored.height == nil)
+        #expect(try Data(contentsOf: stored.fileURL) == given)
     }
 
     @Test func mimeParametersAreIgnoredAndUnknownTypesRefused() throws {

@@ -38,11 +38,14 @@ public enum AssetStore {
         let assetsDir = libraryURL.appending(path: "assets")
         let fileURL = assetsDir.appending(path: filename)
 
+        // Everything read from the bytes is worked out before the file exists, so nothing that
+        // fails here can leave an orphan in assets/.
+        let size = mediaType == .svg ? SVGDocument.dimensions(of: data) : pixelSize(of: data)
+
         try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
         // As delivered: no re-encoding, no normalising, never over an existing file.
         try data.write(to: fileURL, options: .withoutOverwriting)
 
-        let size = mediaType == .svg ? SVGDocument.dimensions(of: data) : pixelSize(of: data)
         return StoredAssetFile(
             assetID: assetID,
             filename: filename,
