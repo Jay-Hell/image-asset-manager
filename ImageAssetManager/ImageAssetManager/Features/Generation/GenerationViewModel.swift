@@ -222,13 +222,14 @@ final class GenerationViewModel {
     // MARK: - Loading
 
     func loadInitialData() async {
-        async let providersResult = ProviderRegistry.shared.allProviders()
+        // The same decision the MCP makes: compiled in and a key present (spec v0.3 §5.1).
+        let providersResult = ProviderAvailability.usable()
         async let projectsResult = (try? database.fetchProjects()) ?? []
         async let promptsResult = (try? database.fetchPrompts()) ?? []
 
-        let (providers, projs, prompts) = await (providersResult, projectsResult, promptsResult)
+        let (projs, prompts) = await (projectsResult, promptsResult)
 
-        availableProviders = providers
+        availableProviders = providersResult
         projects = projs
         allPrompts = prompts
 
@@ -286,20 +287,19 @@ final class GenerationViewModel {
             // The same Core path as the MCP: the planner resolves once and gates before any provider
             // call (asking OpenRouter a price first where an explicit model needs one), and the
             // service walks the routes with fallback. Confirm records from this and never resolves again.
-            let prepared = try await GenerationPlanner(catalogue: { CatalogueStore.shared.snapshot() }, live: .shared).prepare(
-                selection, referenceCount: confirmedReferenceIDs.count, aspectRatio: apiRatio, providers: providerIDs)
             let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
             let references = await buildReferences()
-            let request = prepared.request(
+            let run = try await PanelGeneration.run(
+                selection: selection, referenceCount: confirmedReferenceIDs.count, aspectRatio: apiRatio,
                 prompt: prompt, negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
-                aspectRatio: aspectRatio, width: resolvedWidth, height: resolvedHeight, references: references)
-
-            let generated = try await service(for: prepared).call(request)
+                shape: aspectRatio, width: resolvedWidth, height: resolvedHeight, references: references,
+                providers: availableProviders, database: database, libraryURL: libraryURL,
+                catalogue: { CatalogueStore.shared.snapshot() }, live: .shared)
             pendingPrompt = prompt
             pendingReferences = references
-            pendingGenerated = generated
-            generatedImage = generated.image
-            preparedGeneration = prepared
+            pendingGenerated = run.generated
+            generatedImage = run.generated.image
+            preparedGeneration = run.prepared
         } catch {
             generationError = error.localizedDescription
         }
@@ -310,11 +310,8 @@ final class GenerationViewModel {
     /// The service the MCP builds, over the providers this panel has: every route's provider is
     /// reachable, so a fallback to another provider works.
     private func service(for prepared: PreparedGeneration) throws -> GenerationService {
-        guard let first = availableProviders.first else { throw ProviderError.apiKeyNotFound }
-        return GenerationService(
-            database: database, libraryURL: libraryURL,
-            provider: availableProviders.first { $0.providerID == prepared.resolution.provider } ?? first,
-            router: RouteExecutor(providers: availableProviders, liveModels: .shared))
+        try PanelGeneration.service(
+            for: prepared, providers: availableProviders, database: database, libraryURL: libraryURL, live: .shared)
     }
 
     private func buildReferences() async -> [GenerationReference] {

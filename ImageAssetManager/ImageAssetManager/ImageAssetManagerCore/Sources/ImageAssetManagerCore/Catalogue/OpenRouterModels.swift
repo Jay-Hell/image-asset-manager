@@ -72,8 +72,9 @@ public struct OpenRouterPrice: Sendable, Equatable, Codable {
     public let source: String   // EstimateSource raw value; kept a string so the cache file stays plain
 
     /// No learnt price may fall below this per image: a bad observation (a zero, a rounding
-    /// artefact) must not let a request slip under the spending gate.
-    public static let minimumUSDPerImage = Decimal(string: "0.001")!
+    /// artefact) must not let a request slip under the spending gate. $0.005 is 40 times below the
+    /// $0.20 gate for an unknown price; $0.001 left one bad cost 200 times below it.
+    public static let minimumUSDPerImage = Decimal(string: "0.005")!
 
     public init(usdPerImage: Decimal, source: String) {
         self.usdPerImage = max(usdPerImage, Self.minimumUSDPerImage)

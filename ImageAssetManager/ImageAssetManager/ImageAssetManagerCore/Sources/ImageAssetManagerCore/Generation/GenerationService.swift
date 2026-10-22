@@ -58,6 +58,14 @@ public actor GenerationService {
 
         public var primaryProjectID: String? { projectIDs.first }
 
+        /// The same request gated against another budget (a batch's next image, after spending).
+        public func with(budget: GenerationPolicy.BudgetContext?) -> Request {
+            Request(
+                prompt: prompt, negativePrompt: negativePrompt, model: model, aspectRatio: aspectRatio,
+                width: width, height: height, references: references, projectIDs: projectIDs, tags: tags,
+                variantFamilyName: variantFamilyName, budget: budget, routes: routes, ratio: ratio)
+        }
+
         public init(
             prompt: String,
             negativePrompt: String? = nil,
@@ -112,7 +120,16 @@ public actor GenerationService {
         public let fallbackNotes: [String]
         /// The provider that served it.
         public let providerID: String
+        /// The paid call's ID. Until `record` keeps the image, a `refused_spend` row with this ID
+        /// ("not kept") holds the charge; `record` swaps it for the asset's `spend_log` row, which
+        /// takes this ID too, and the asset's ID is this ID.
+        public let chargeID: String
     }
+
+    /// The reason on the row written the moment a paid image exists.
+    public static let notKeptReason = "not kept"
+    /// The reason when the provider charged and returned nothing to keep.
+    public static let noImageReason = "no image returned"
 
     /// Generate one image, save it as a library asset, and return the outcome.
     /// `index.json` is re-exported once per call. For batch generation, loop
@@ -137,14 +154,35 @@ public actor GenerationService {
         let refInputs = request.references.map(\.input)
         let result: GeneratedImage
         var fallbackNotes: [String] = []
-        if let router, !request.routes.isEmpty {
-            let routed = try await router.generate(routes: request.routes, base: params, references: refInputs.isEmpty ? nil : refInputs)
-            result = routed.image
-            fallbackNotes = routed.fallbackNotes
-        } else {
-            result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
+        let now = ISO8601DateFormatter().string(from: Date())
+        do {
+            if let router, !request.routes.isEmpty {
+                let routed = try await router.generate(routes: request.routes, base: params, references: refInputs.isEmpty ? nil : refInputs)
+                result = routed.image
+                fallbackNotes = routed.fallbackNotes
+            } else {
+                result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
+            }
+        } catch ProviderError.chargedNoImage(let providerID, let modelID, let cost) {
+            // Paid, and nothing came back: the charge is spend all the same.
+            let actual = Double(truncating: cost as NSDecimalNumber)
+            try await database.insertRefusedSpend(
+                providerID: providerID, modelID: modelID, estimatedCost: actual, actualCost: actual,
+                reason: Self.noImageReason, timestamp: now)
+            throw GenerationServiceError.outputRefused(
+                reason: Self.noImageReason, providerID: providerID, modelID: modelID,
+                estimatedCost: actual, actualCost: actual)
         }
-        return Generated(image: result, fallbackNotes: fallbackNotes, providerID: result.providerUsed ?? provider.providerID)
+        let servedBy = result.providerUsed ?? provider.providerID
+        // The image is paid for the moment it exists. Write the charge now, before the caller can
+        // drop it (Discard, another Generate, quitting); Keep swaps this row for the asset's.
+        let chargeID = UUID().uuidString
+        let estimate = Double(truncating: (result.estimatedCostGBP ?? provider.estimateCost(params)) as NSDecimalNumber)
+        try await database.insertRefusedSpend(
+            id: chargeID, providerID: servedBy, modelID: result.modelUsed ?? request.model.id,
+            estimatedCost: estimate, actualCost: result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) },
+            reason: Self.notKeptReason, timestamp: now)
+        return Generated(image: result, fallbackNotes: fallbackNotes, providerID: servedBy, chargeID: chargeID)
     }
 
     /// Store a generated image and write its rows: asset, spend, tags, references, variant family,
@@ -165,8 +203,18 @@ public actor GenerationService {
         let estimatedCost = Double(truncating: (result.estimatedCostGBP ?? provider.estimateCost(params)) as NSDecimalNumber)
         let actualCost = result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) }
 
-        let assetID = UUID().uuidString
+        // The asset's ID is the charge's: a second Keep of the same answer (after a failed one
+        // too) finds the asset already there and writes nothing.
+        let assetID = generated.chargeID
         let assetsDir = libraryURL.appending(path: "assets")
+        if let kept = try await database.fetchAsset(id: assetID) {
+            return Outcome(
+                assetID: kept.id, filename: kept.filename, fileURL: assetsDir.appending(path: kept.filename),
+                modelID: kept.modelID, providerID: kept.providerID,
+                estimatedCost: kept.estimatedCost ?? estimatedCost, actualCost: kept.actualCost ?? actualCost,
+                seed: result.seed, mediaType: kept.effectiveMediaType?.rawValue ?? result.mimeType ?? "image/\(result.format)",
+                fallbackNotes: fallbackNotes)
+        }
         // The one place bytes become a file (pass C): stored as delivered and named for what
         // they are, so an `image/svg+xml` answer is an SVG asset (T15). A label the bytes
         // contradict is refused, not trusted. The provider has already charged by now, so a
@@ -177,10 +225,8 @@ public actor GenerationService {
                 result.data, mimeType: result.mimeType ?? "image/\(result.format)", assetID: assetID, libraryURL: libraryURL
             )
         } catch let refusal as AssetStoreError {
-            try await database.insertRefusedSpend(
-                providerID: servedBy, modelID: modelID, estimatedCost: estimatedCost, actualCost: actualCost,
-                reason: refusal.localizedDescription, timestamp: now
-            )
+            // The charge row written at generation time stays the one row; it now says why.
+            try await database.updateRefusedSpendReason(id: generated.chargeID, reason: refusal.localizedDescription)
             throw GenerationServiceError.outputRefused(
                 reason: refusal.localizedDescription, providerID: servedBy, modelID: modelID,
                 estimatedCost: estimatedCost, actualCost: actualCost
@@ -206,19 +252,25 @@ public actor GenerationService {
             createdAt: now,
             mediaType: stored.mediaType.rawValue
         )
-        try await database.insertAsset(asset)
+        // The asset and its spend row go in, and the "not kept" row comes out, in one transaction.
+        do {
+            try await database.keepCharge(chargeID: generated.chargeID, asset: asset, spend: SpendLog(
+                id: generated.chargeID,
+                assetID: assetID,
+                providerID: servedBy,
+                estimatedCost: estimatedCost,
+                actualCost: actualCost,
+                timestamp: now
+            ))
+        } catch {
+            // Nothing was written; the file must not block a second Keep (it is stored without overwriting).
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
+        }
 
         if !request.projectIDs.isEmpty {
             try await database.setProjectsForAsset(assetID: assetID, projectIDs: request.projectIDs)
         }
-
-        try await database.insertSpendLog(SpendLog(
-            assetID: assetID,
-            providerID: servedBy,
-            estimatedCost: estimatedCost,
-            actualCost: actualCost,
-            timestamp: now
-        ))
 
         for name in request.tags.map({ $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }) {
             let tag = try await database.findOrCreateTag(name: name)

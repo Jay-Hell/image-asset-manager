@@ -39,14 +39,9 @@ public struct GenerateTools: Sendable {
         self.fallbackProvider = fallbackProvider
     }
 
-    /// The providers with a key in the Keychain.
+    /// The providers with a key in the Keychain: `ProviderAvailability`, as the panel uses.
     public static func keychainProviders() -> [any ImageProvider] {
-        var configured: [any ImageProvider] = []
-        if (try? KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)) != nil {
-            configured.append(NanaBananaProvider())
-        }
-        if OpenRouterProvider.hasKey() { configured.append(OpenRouterProvider()) }
-        return configured
+        ProviderAvailability.usable()
     }
 
     public func call(_ name: String, arguments: Data) async throws -> Data {
@@ -186,15 +181,21 @@ public struct GenerateTools: Sendable {
         var spent = 0.0
         let limit = Self.double(budget.maxCostGBP)
         for index in 0..<count {
-            // T17: stop when what has actually been spent, plus the next estimate, would pass the cap.
-            // The up-front gate priced the batch at the estimate; real costs can run higher.
-            let next = outcomes.last?.estimatedCost ?? Self.double(resolution0.estimateGBP)
+            // T17: stop when what has actually been spent, plus the next image, would pass the cap.
+            // The up-front gate priced the batch at the estimate; real costs can run higher, so the
+            // next image is priced at the larger of the estimate and what the last one really cost.
+            let next = max(Self.double(resolution0.estimateGBP),
+                           outcomes.last.map { $0.actualCost ?? $0.estimatedCost } ?? 0)
             if index > 0 && spent + next > limit + 1e-9 {
                 notes.append("Stopped after \(index) of \(count) images: spent \(Self.format(spent)) so far, and the next (about \(Self.format(next))) would pass max_cost_gbp \(Self.format(budget.maxCostGBP))")
                 break
             }
             do {
-                let outcome = try await service.generate(request)
+                // A fallback or 404 retry inside this image is re-checked for the images still to make,
+                // against the cap less what the batch has spent.
+                let gate = GenerationPolicy.BudgetContext(
+                    count: count - index, limits: budget, spentGBP: Decimal(spent))
+                let outcome = try await service.generate(request.with(budget: gate))
                 outcomes.append(outcome)
                 spent += outcome.actualCost ?? outcome.estimatedCost
                 for note in outcome.fallbackNotes where !notes.contains(note) { notes.append(note) }

@@ -43,10 +43,19 @@ public enum GenerationPolicy {
     public struct BudgetContext: Sendable, Equatable {
         public let count: Int
         public let limits: BudgetLimits
+        /// What the batch has already spent (GBP). A re-check prices against the cap that is left.
+        public let spentGBP: Decimal
 
-        public init(count: Int, limits: BudgetLimits) {
+        public init(count: Int, limits: BudgetLimits, spentGBP: Decimal = 0) {
             self.count = count
             self.limits = limits
+            self.spentGBP = spentGBP
+        }
+
+        /// The limits a re-check (fallback route, 404 retry) holds the next price against:
+        /// the cap less what has been spent.
+        public var remainingLimits: BudgetLimits {
+            BudgetLimits(maxImages: limits.maxImages, maxCostGBP: max(0, limits.maxCostGBP - spentGBP))
         }
     }
 

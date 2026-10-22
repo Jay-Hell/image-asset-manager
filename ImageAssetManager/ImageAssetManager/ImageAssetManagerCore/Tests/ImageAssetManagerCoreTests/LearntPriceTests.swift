@@ -35,10 +35,13 @@ struct LearntPriceTests {
         rig.live.recordObservedCost(usd: Decimal(string: "0.0000001")!, for: Self.model, size: "1K")
         let floored = try resolve(rig, size: "1K")
         #expect(floored.estimateSource == .observedCost)
-        #expect(floored.estimateUSD == Decimal(string: "0.001"))
+        #expect(floored.estimateUSD == Decimal(string: "0.005"))
+        // 0.004 is below the $0.005 floor too (it was above the old $0.001 one).
+        rig.live.recordObservedCost(usd: Decimal(string: "0.004")!, for: Self.model, size: "4K")
+        #expect(try resolve(rig, size: "4K").estimateUSD == Decimal(string: "0.005"))
         // The pair: a price above the floor is kept as it is.
-        rig.live.recordObservedCost(usd: Decimal(string: "0.002")!, for: Self.model, size: "2K")
-        #expect(try resolve(rig, size: "2K").estimateUSD == Decimal(string: "0.002"))
+        rig.live.recordObservedCost(usd: Decimal(string: "0.006")!, for: Self.model, size: "2K")
+        #expect(try resolve(rig, size: "2K").estimateUSD == Decimal(string: "0.006"))
     }
 
     @Test func aCachedPriceBelowTheFloorIsRaisedWhenRead() throws {
@@ -48,7 +51,7 @@ struct LearntPriceTests {
         try Data(file.utf8).write(to: dir.appending(path: "openrouter-prices.json"))
         let store = OpenRouterModelStore(directory: dir)
         let learnt = try #require(store.snapshot().learntPrice(model: Self.model, size: nil))
-        #expect(learnt.usdPerImage == Decimal(string: "0.001"))
+        #expect(learnt.usdPerImage == Decimal(string: "0.005"))
     }
 
     @Test func theEndpointListingServesEverySizeButAnObservedCostDoesNot() {

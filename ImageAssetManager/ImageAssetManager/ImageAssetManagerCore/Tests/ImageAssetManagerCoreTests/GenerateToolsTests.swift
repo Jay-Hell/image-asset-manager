@@ -48,6 +48,8 @@ struct ToolsRig {
     let live: OpenRouterModelStore
     let tools: GenerateTools
     let providers: [any ImageProvider]
+    /// Core's decision on which providers are usable here, as the panel and the MCP both call it.
+    let usable: @Sendable () -> [any ImageProvider]
 
     static let defaultCeiling = GenerationPolicy.BudgetLimits(maxImages: 50, maxCostGBP: Decimal(string: "5.00")!)
 
@@ -72,21 +74,23 @@ struct ToolsRig {
             remoteURL: URL(string: "https://example.test/models.json")!, session: remote.session, build: 0)
         let live = OpenRouterModelStore(directory: makeTempDirectory(), session: listing.session)
         await live.refresh()
-        var providers: [any ImageProvider] = []
-        if googleKey {
-            providers.append(BoundGoogle(inner: NanaBananaProvider(catalogue: store, apiKey: { "g-test-key-123" }), session: google.session))
+        // Both surfaces decide which providers are usable through Core's one function, with key
+        // presence injected (no Keychain). The providers themselves are bound to the stub sessions.
+        let boundGoogle = BoundGoogle(inner: NanaBananaProvider(catalogue: store, apiKey: { "g-test-key-123" }), session: google.session)
+        let boundOR = BoundOpenRouter(inner: OpenRouterProvider(catalogue: store, live: live, apiKey: { "or-test-key-456" }), session: openRouter.session)
+        let usable: @Sendable () -> [any ImageProvider] = {
+            ProviderAvailability.usable(
+                hasKey: { _, account in account == NanaBananaProvider.keychainAccount ? googleKey : openRouterKey },
+                google: boundGoogle, openRouter: boundOR)
         }
-        if openRouterKey {
-            providers.append(BoundOpenRouter(inner: OpenRouterProvider(catalogue: store, live: live, apiKey: { "or-test-key-456" }), session: openRouter.session))
-        }
+        let providers = usable()
         let db = try AppDatabase(path: ":memory:")
         let dir = makeTempDirectory()
-        let frozen = providers
         let tools = GenerateTools(
             database: db, libraryURL: dir, catalogue: { store.snapshot() }, live: live,
-            providers: { frozen }, ceiling: { ceiling })
+            providers: usable, ceiling: { ceiling })
         return ToolsRig(db: db, dir: dir, google: google, openRouter: openRouter, listing: listing, remote: remote,
-                        store: store, live: live, tools: tools, providers: providers)
+                        store: store, live: live, tools: tools, providers: providers, usable: usable)
     }
 
     var providerIDs: Set<String> { Set(providers.map(\.providerID)) }
@@ -118,21 +122,25 @@ struct BatchCostStopTests {
         let rig = try await ToolsRig.make(googleKey: false, openRouter: paid())
         let result = try await rig.call("generate", args)
 
-        // Worked by hand: after one image 0.395, after two 0.79 (0.79 + 0.026544 = 0.8165 is still
-        // under 1.00, so a third is made), after three 1.185; 1.185 + 0.026544 passes 1.00, so it stops.
+        // Worked by hand: after one image 0.395, and the next is priced at what the last really cost
+        // (0.395, above the 0.026544 estimate): 0.395 + 0.395 = 0.79 is under 1.00, so a second is made.
+        // After two 0.79, and 0.79 + 0.395 = 1.185 passes 1.00, so it stops with 0.79 spent. Priced at
+        // the stale estimate it would have made a third (0.79 + 0.026544 < 1.00) and ended at 1.185.
         let batch = dict(result["batch"])
         #expect(num(batch["requested"]) == 5)
-        #expect(num(batch["made"]) == 3)
+        #expect(num(batch["made"]) == 2)
         #expect(batch["stopped_early"] as? Bool == true)
-        #expect((result["generated"] as? [Any])?.count == 3)
-        #expect(rig.orGenerations.count == 3)                    // and no fourth request left the process
-        #expect(abs(num(dict(result["cost"])["actual_gbp"]) - 1.185) < 1e-9)
+        #expect((result["generated"] as? [Any])?.count == 2)
+        #expect(rig.orGenerations.count == 2)                    // and no third request left the process
+        let spent = num(dict(result["cost"])["actual_gbp"])
+        #expect(abs(spent - 0.79) < 1e-9)
+        #expect(spent <= 1.0)                                    // the run ends at or under the cap
         #expect(dict(result["cost"])["actual_from_provider"] as? Bool == true)
         let notes = (result["notes"] as? [String]) ?? []
-        #expect(notes.contains { $0.hasPrefix("Stopped after 3 of 5") })
+        #expect(notes.contains { $0.hasPrefix("Stopped after 2 of 5") })
         // The assets are in the library, one spend row each.
         let spend = try await rig.db.fetchSpendSummary(since: "2000-01-01", until: "2100-01-01")
-        #expect(spend.generationCount == 3)
+        #expect(spend.generationCount == 2)
     }
 
     @Test func theSameBatchUnderAHigherCapRunsToTheEnd() async throws {
@@ -318,15 +326,17 @@ struct PanelAndMCPTests {
             let panel = try await ToolsRig.make()
             let viaMCP = try await mcp.call("generate", ["prompt": "a viaduct", "quality": tier])
 
-            // The panel: its own selection type, through the planner and the service, as the view model does.
-            let prepared = try await GenerationPlanner(catalogue: { panel.store.snapshot() }, live: panel.live).prepare(
-                .tier(tier), referenceCount: 0, aspectRatio: "1:1", providers: panel.providerIDs)
-            let service = GenerationService(
-                database: panel.db, libraryURL: panel.dir, provider: panel.providers[0],
-                router: RouteExecutor(providers: panel.providers, liveModels: panel.live))
+            // The panel: the Core function the view model calls (`PanelGeneration.run`), over the
+            // providers Core's one availability function says are usable.
+            let run = try await PanelGeneration.run(
+                selection: .tier(tier), referenceCount: 0, aspectRatio: "1:1", prompt: "a viaduct", negativePrompt: nil,
+                shape: .square, width: 1024, height: 1024, references: [], providers: panel.usable(),
+                database: panel.db, libraryURL: panel.dir, catalogue: { panel.store.snapshot() }, live: panel.live)
+            let prepared = run.prepared
+            let service = try PanelGeneration.service(
+                for: prepared, providers: panel.usable(), database: panel.db, libraryURL: panel.dir, live: panel.live)
             let request = prepared.request(prompt: "a viaduct", aspectRatio: .square, width: 1024, height: 1024)
-            let generated = try await service.call(request)
-            let outcome = try await service.record(generated, for: request)
+            let outcome = try await service.record(run.generated, for: request)
 
             let resolved = dict(viaMCP["resolved"])
             #expect(resolved["provider"] as? String == prepared.resolution.provider)
@@ -345,13 +355,14 @@ struct PanelAndMCPTests {
 
     @Test func thePanelFallsBackAndStoresThroughTheLibraryNotRawBytes() async throws {
         let rig = try await ToolsRig.make(google: { _ in (404, Data(), [:]) })
-        let prepared = try await GenerationPlanner(catalogue: { rig.store.snapshot() }, live: rig.live).prepare(
-            .tier("fast"), referenceCount: 0, aspectRatio: "1:1", providers: rig.providerIDs)
-        let service = GenerationService(
-            database: rig.db, libraryURL: rig.dir, provider: rig.providers[0],
-            router: RouteExecutor(providers: rig.providers, liveModels: rig.live))
-        let request = prepared.request(prompt: "p", aspectRatio: .square, width: 1024, height: 1024)
-        let generated = try await service.call(request)
+        let run = try await PanelGeneration.run(
+            selection: .tier("fast"), referenceCount: 0, aspectRatio: "1:1", prompt: "p", negativePrompt: nil,
+            shape: .square, width: 1024, height: 1024, references: [], providers: rig.usable(),
+            database: rig.db, libraryURL: rig.dir, catalogue: { rig.store.snapshot() }, live: rig.live)
+        let service = try PanelGeneration.service(
+            for: run.prepared, providers: rig.usable(), database: rig.db, libraryURL: rig.dir, live: rig.live)
+        let request = run.prepared.request(prompt: "p", aspectRatio: .square, width: 1024, height: 1024)
+        let generated = run.generated
         #expect(generated.providerID == "openrouter")                    // fell back
         #expect(generated.fallbackNotes.count == 1)
         let outcome = try await service.record(generated, for: request)
@@ -369,6 +380,52 @@ struct PanelAndMCPTests {
         #expect(dict(viaMCP["resolved"])["model"] as? String == prepared.resolution.model.id)
         #expect(abs(num(dict(viaMCP["cost"])["estimated_gbp"]) - Double(truncating: prepared.resolution.estimateGBP as NSDecimalNumber)) < 1e-9)
         #expect(prepared.routes.count == 1)     // a named model has no fallback
+    }
+}
+
+@Suite("panel and MCP agree on usable providers")
+struct UsableProvidersTests {
+
+    @Test func aProviderWithoutAKeyIsNotUsableAndTheOneWithAKeyIs() async throws {
+        let rig = try await ToolsRig.make(googleKey: false)
+        #expect(rig.usable().map(\.providerID) == ["openrouter"])
+        let both = try await ToolsRig.make()
+        #expect(both.usable().map(\.providerID) == ["nano_banana", "openrouter"])
+        let none = try await ToolsRig.make(googleKey: false, openRouterKey: false)
+        #expect(none.usable().isEmpty)
+    }
+
+    @Test func withNoGoogleKeyThePanelResolvesAndSendsWhatTheMCPDoes() async throws {
+        // The panel used to register Google with no key and offer Gemini routes the MCP excluded.
+        for tier in ["fast", "standard", "pro"] {
+            let mcp = try await ToolsRig.make(googleKey: false)
+            let panel = try await ToolsRig.make(googleKey: false)
+            let viaMCP = try await mcp.call("generate", ["prompt": "a viaduct", "quality": tier])
+            let run = try await PanelGeneration.run(
+                selection: .tier(tier), referenceCount: 0, aspectRatio: "1:1", prompt: "a viaduct", negativePrompt: nil,
+                shape: .square, width: 1024, height: 1024, references: [], providers: panel.usable(),
+                database: panel.db, libraryURL: panel.dir, catalogue: { panel.store.snapshot() }, live: panel.live)
+            #expect(run.prepared.resolution.provider == "openrouter")
+            #expect(dict(viaMCP["resolved"])["provider"] as? String == "openrouter")
+            #expect(dict(viaMCP["resolved"])["model"] as? String == run.prepared.resolution.model.id)
+            #expect(mcp.google.requests.isEmpty && panel.google.requests.isEmpty)
+            #expect(mcp.orGenerations.first?.url == panel.orGenerations.first?.url)
+            // The model picker lists no Gemini-direct model either.
+            let options = ModelOptions.all(
+                catalogue: panel.store.snapshot(), providers: Set(panel.usable().map(\.providerID)), live: panel.live.snapshot())
+            #expect(!options.contains { $0.provider == "nano_banana" })
+        }
+    }
+
+    @Test func withNoKeyAtAllThePanelHasNothingToRunOn() async throws {
+        let rig = try await ToolsRig.make(googleKey: false, openRouterKey: false)
+        await #expect(throws: (any Error).self) {
+            _ = try await PanelGeneration.run(
+                selection: .tier("fast"), referenceCount: 0, aspectRatio: "1:1", prompt: "p", negativePrompt: nil,
+                shape: .square, width: 1024, height: 1024, references: [], providers: rig.usable(),
+                database: rig.db, libraryURL: rig.dir, catalogue: { rig.store.snapshot() }, live: rig.live)
+        }
+        #expect(rig.google.requests.isEmpty && rig.openRouter.requests.filter { $0.method == "POST" }.isEmpty)
     }
 }
 

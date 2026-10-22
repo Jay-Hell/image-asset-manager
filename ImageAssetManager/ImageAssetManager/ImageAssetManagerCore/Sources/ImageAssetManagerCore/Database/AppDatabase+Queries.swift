@@ -336,12 +336,33 @@ extension AppDatabase {
     }
 
     /// A charge for an image the library refused to store. Counted in every spend total.
-    public func insertRefusedSpend(providerID: String, modelID: String?, estimatedCost: Double?, actualCost: Double?, reason: String, timestamp: String) async throws {
+    public func insertRefusedSpend(id: String = UUID().uuidString, providerID: String, modelID: String?, estimatedCost: Double?, actualCost: Double?, reason: String, timestamp: String) async throws {
         try await write { db in
             try db.execute(
                 sql: "INSERT INTO refused_spend (id, provider_id, model_id, estimated_cost, actual_cost, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                arguments: [UUID().uuidString, providerID, modelID, estimatedCost, actualCost, reason, timestamp]
+                arguments: [id, providerID, modelID, estimatedCost, actualCost, reason, timestamp]
             )
+        }
+    }
+
+    /// Say why a charge is still not an asset (its row stays one charge, counted once).
+    public func updateRefusedSpendReason(id: String, reason: String) async throws {
+        try await write { db in
+            try db.execute(sql: "UPDATE refused_spend SET reason = ? WHERE id = ?", arguments: [reason, id])
+        }
+    }
+
+    /// Keep a paid image: the asset and its `spend_log` row go in, and the generation-time
+    /// `refused_spend` row ("not kept") with the same charge ID goes out, in one transaction. The charge
+    /// ID is the spend row's ID, so a second call finds it and writes nothing. Returns false for that.
+    @discardableResult
+    public func keepCharge(chargeID: String, asset: Asset, spend: SpendLog) async throws -> Bool {
+        try await write { db in
+            if try SpendLog.fetchOne(db, key: chargeID) != nil { return false }
+            try asset.insert(db)
+            try spend.insert(db)
+            try db.execute(sql: "DELETE FROM refused_spend WHERE id = ?", arguments: [chargeID])
+            return true
         }
     }
 }

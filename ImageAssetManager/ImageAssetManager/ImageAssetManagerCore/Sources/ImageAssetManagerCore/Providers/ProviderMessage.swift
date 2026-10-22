@@ -20,6 +20,9 @@ public enum ProviderMessage {
         for secret in secrets where secret.count >= 8 {
             text = text.replacingOccurrences(of: secret, with: "[key]")
         }
+        // A key echoed in a URL query (`?key=…`), whatever it is: Google takes its key there.
+        text = text.replacingOccurrences(
+            of: #"([?&]key=)[^&\s"'<>]+"#, with: "$1[key]", options: .regularExpression)
         return text.count > maxLength ? String(text.prefix(maxLength)) + "…" : text
     }
 

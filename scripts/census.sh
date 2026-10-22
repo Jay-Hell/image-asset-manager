@@ -22,9 +22,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 MIN_TESTS="${MIN_TESTS:-0}"
 # Separate floors for the two suites; the defaults are the counts at the last green census.
-MIN_CORE="${MIN_CORE:-300}"
+MIN_CORE="${MIN_CORE:-317}"
 MIN_APP="${MIN_APP:-1}"
-MIN_NODE="${MIN_NODE:-9}"
+MIN_NODE="${MIN_NODE:-11}"
 # A generic simulator destination: no named device to go missing when Xcode updates its list.
 IPAD="${IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 PROJECT="$ROOT/ImageAssetManager/ImageAssetManager.xcodeproj"

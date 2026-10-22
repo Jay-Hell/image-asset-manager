@@ -336,6 +336,22 @@ struct NanaBananaProviderTests {
         #expect(rig.google.requests.count == 1)   // the 404 only: nothing was sent to the dearer model
     }
 
+    @Test func p2_aRetryIsCheckedAgainstTheCapLessWhatTheBatchHasSpent() async throws {
+        let rig = try retiredToDearerRig()
+        // A £0.20 cap clears the replacement (£0.10586) on its own, but with £0.10 already spent only £0.10 is left.
+        let limits = GenerationPolicy.BudgetLimits(maxImages: 20, maxCostGBP: Decimal(string: "0.20")!)
+        let spent = try oldModelParams(rig, budget: .init(count: 1, limits: limits, spentGBP: Decimal(string: "0.10")!))
+        await #expect(throws: GenerationPolicy.BudgetViolation.tooCostly(subtotal: Decimal(string: "0.10586")!, max: Decimal(string: "0.10")!)) {
+            try await rig.provider.generate(spent, references: nil, session: rig.google.session)
+        }
+        #expect(rig.google.requests.count == 1)   // the 404 only
+        // The pair: with nothing spent the same retry goes ahead.
+        let fresh = try retiredToDearerRig()
+        let none = try oldModelParams(fresh, budget: .init(count: 1, limits: limits))
+        let result = try await fresh.provider.generate(none, references: nil, session: fresh.google.session)
+        #expect(result.modelUsed == "gemini-3-pro-image")
+    }
+
     @Test func p2_aRetryWithinBudgetUsesTheNewModelsSizeAndReportsTheModelUsed() async throws {
         let rig = try retiredToDearerRig()
         let limits = GenerationPolicy.BudgetLimits(maxImages: 20, maxCostGBP: Decimal(string: "0.50")!)

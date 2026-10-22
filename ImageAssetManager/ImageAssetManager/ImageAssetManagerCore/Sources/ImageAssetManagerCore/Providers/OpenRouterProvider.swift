@@ -101,12 +101,21 @@ public struct OpenRouterProvider: ImageProvider {
         case 429:
             throw ProviderError.rateLimited
         case 400:
-            throw ProviderError.badRequest(Self.providerMessage(data) ?? "HTTP 400")
+            throw ProviderError.badRequest(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP 400")
         default:
-            throw ProviderError.generationFailed(Self.providerMessage(data) ?? "HTTP \(http.statusCode)")
+            throw ProviderError.generationFailed(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP \(http.statusCode)")
         }
         let fx = catalogue.snapshot().fx
-        let image = try Self.parseResponse(data, usdToGBP: fx)
+        let image: GeneratedImage
+        do {
+            image = try Self.parseResponse(data, usdToGBP: fx)
+        } catch ProviderError.invalidResponse {
+            // A 200 that carries a cost but no image is still a charge: say so, so it is recorded.
+            if let usd = Self.costUSD(in: data) {
+                throw ProviderError.chargedNoImage(provider: providerID, model: params.model.id, costGBP: usd * fx)
+            }
+            throw ProviderError.invalidResponse
+        }
         if let usd = Self.costUSD(in: data) { live.recordObservedCost(usd: usd, for: params.model.id, size: params.model.imageSize) }
         return image
     }
@@ -198,8 +207,8 @@ public struct OpenRouterProvider: ImageProvider {
         return Catalogue.decimal(raw.doubleValue)
     }
 
-    private static func providerMessage(_ data: Data) -> String? {
-        ProviderMessage.text(from: data)
+    private static func providerMessage(_ data: Data, apiKey: String) -> String? {
+        ProviderMessage.text(from: data, redacting: [apiKey])
     }
 }
 
