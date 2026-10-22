@@ -35,6 +35,8 @@ public struct Catalogue: Sendable, Equatable {
         /// Defaults merged into the request body. App-owned fields are written last.
         public let body: [String: JSONValue]
         public let minBuild: Int?
+        /// Output formats the model lists (`output_format`), from the OpenRouter live record. Empty means none listed.
+        public var outputFormats: [String] = []
 
         public func supports(_ capability: Capability) -> Bool {
             switch capability {
@@ -46,6 +48,7 @@ public struct Catalogue: Sendable, Equatable {
         /// The `imageSize` the catalogue's body asks for by default, if any.
         public var defaultImageSize: String? {
             body["generationConfig"]?.objectValue?["imageConfig"]?.objectValue?["imageSize"]?.stringValue
+                ?? body["resolution"]?.stringValue   // openrouter.images
         }
     }
 
@@ -92,7 +95,7 @@ public struct Catalogue: Sendable, Equatable {
     public static let maxUSDPerImage: Decimal = 1
     public static let allowedHeaders: Set<String> = ["anthropic-version", "anthropic-beta"]
     /// Request shapes compiled into this build, by catalogue `api` string.
-    public static let knownModelAPIs: Set<String> = ["gemini.generateContent"]
+    public static let knownModelAPIs: Set<String> = ["gemini.generateContent", "openrouter.images"]
     public static let knownRefinementAPI = "anthropic.messages"
     /// `anthropic-beta` values a catalogue may ask for.
     public static let allowedAnthropicBetas: Set<String> = ["server-side-fallback-2026-07-01"]
@@ -100,7 +103,7 @@ public struct Catalogue: Sendable, Equatable {
     static let allowedEfforts: Set<String> = ["low", "medium", "high"]
     static let allowedResponseModalities: Set<String> = ["IMAGE", "TEXT"]
     /// Providers this build can call. Routes to others load but are skipped at resolve time.
-    public static let compiledProviders: Set<String> = ["nano_banana"]
+    public static let compiledProviders: Set<String> = ["nano_banana", "openrouter"]
     /// Tiers the app cannot work without.
     public static let requiredImageTiers = ["fast", "standard", "pro"]
 
@@ -226,7 +229,7 @@ public struct Catalogue: Sendable, Equatable {
                     }
                 }
                 // "Usable" means usable by this build: a route to a provider it does not
-                // have (openrouter, until pass B) is kept but does not count. Image tiers
+                // have is kept but does not count. Image tiers
                 // must have a usable route; any other tier is refused only if it had one
                 // as authored and lost it.
                 let authoredUsable = routeItems.filter { compiledProviders.contains($0["provider"] as? String ?? "") }.count
@@ -330,6 +333,18 @@ public struct Catalogue: Sendable, Equatable {
                         return "generationConfig.\(k)"
                     }
                 }
+            }
+            return nil
+        case "openrouter.images":
+            // The model's live record decides what it accepts, and the app owns the prompt,
+            // aspect ratio, `n` and references. A catalogue body may only set a default for:
+            //  - `resolution`: the size the tier asks for (the analogue of Gemini's imageSize);
+            //    it moves the price, so it is checked against the model's listed values at resolve time.
+            //  - `output_format`: the encoding of the result (for example `svg`); it does not add work.
+            // Anything else (`n`, `provider`, `plugins`, `models`, `transforms`, an extra `model`) would
+            // add billed work or route the prompt somewhere the gated estimate never priced.
+            for (key, value) in body {
+                guard key == "resolution" || key == "output_format", value.stringValue != nil else { return key }
             }
             return nil
         case knownRefinementAPI:
