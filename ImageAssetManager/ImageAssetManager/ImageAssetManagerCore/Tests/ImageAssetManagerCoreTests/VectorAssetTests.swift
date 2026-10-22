@@ -187,6 +187,34 @@ struct SVGPreviewSafetyTests {
         #expect(out.contains("<circle"))
     }
 
+    /// What a denylist let through: a CSS-escaped `url(` in `style`, an XHTML `srcset`, a
+    /// `<meta>` refresh, `image-set()`, and anything inside an element no list names.
+    @Test func onlyAllowListedElementsAttributesAndStylePropertiesSurvive() throws {
+        let doc = #"""
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:h="http://www.w3.org/1999/xhtml" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 10 10">
+              <rect width="10" height="10" style="fill:#0000FF;background:\75 rl(https://example.com/a.png)"/>
+              <rect width="1" height="1" h:srcset="https://example.com/b.png 1x" srcset="https://example.com/b2.png 1x"/>
+              <h:meta http-equiv="refresh" content="0;url=https://example.com/c"/>
+              <meta content="0;url=https://example.com/d"/>
+              <rect width="1" height="1" fill="image-set('https://example.com/e.png' 1x)"/>
+              <rect width="1" height="1" style="fill: -webkit-image-set(url(https://example.com/f.png) 1x)"/>
+              <rect width="1" height="1" cursor="url(https://example.com/g.cur), auto"/>
+              <unknownthing><circle r="9" fill="red"/></unknownthing>
+              <h:img src="https://example.com/h.png"/>
+              <g inkscape:label="Layer 1" transform="translate(1, 2) scale(2)"><path d="M0 0L10 10" stroke="rgb(0,0,255)" stroke-width="2"/></g>
+            </svg>
+            """#
+        let out = String(decoding: try #require(SVGDocument.sanitisedForPreview(svg(doc))), as: UTF8.self)
+        for banned in ["example.com", "srcset", "meta", "\\", "image-set", "unknownthing", "cursor", "img", "inkscape", "xmlns:h", #"fill="red""#] {
+            #expect(!out.contains(banned), "still contains \(banned)")
+        }
+        // The drawing itself survives, style filtered to what it may say.
+        #expect(out.contains(#"style="fill:#0000FF""#))
+        #expect(out.contains(#"transform="translate(1, 2) scale(2)""#))
+        #expect(out.contains(#"<path d="M0 0L10 10" stroke="rgb(0,0,255)" stroke-width="2">"#))
+        #expect(out.contains(#"xmlns="http://www.w3.org/2000/svg""#))
+    }
+
     /// Blue underneath; a script would turn it red; any image that loads is green; an `<image>`
     /// the system renderer cannot load is drawn as a red placeholder. Only blue is a pass.
     /// (Measured on macOS 26: CoreSVG does not load `file:`/`https:` hrefs but does render
