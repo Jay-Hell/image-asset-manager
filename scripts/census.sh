@@ -20,7 +20,8 @@ set -u -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 MIN_TESTS="${MIN_TESTS:-0}"
-IPAD="${IPAD_DESTINATION:-platform=iOS Simulator,name=iPad Pro 13-inch (M4)}"
+# A generic simulator destination: no named device to go missing when Xcode updates its list.
+IPAD="${IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 PROJECT="$ROOT/ImageAssetManager/ImageAssetManager.xcodeproj"
 CORE="$ROOT/ImageAssetManager/ImageAssetManager/ImageAssetManagerCore"
 LOGS="$(mktemp -d)"

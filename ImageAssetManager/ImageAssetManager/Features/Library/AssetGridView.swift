@@ -279,7 +279,9 @@ struct AssetGridView: View {
         } label: {
             Label("Projects", systemImage: "folder.badge.plus")
         }
+        #if os(macOS)
         .menuStyle(.borderedButton)
+        #endif
         .controlSize(.small)
         .disabled(viewModel.selectedAssetIDs.isEmpty)
         .fixedSize()
@@ -313,7 +315,9 @@ struct AssetGridView: View {
         } label: {
             Label("Tags", systemImage: "tag")
         }
+        #if os(macOS)
         .menuStyle(.borderedButton)
+        #endif
         .controlSize(.small)
         .disabled(viewModel.selectedAssetIDs.isEmpty)
         .fixedSize()
