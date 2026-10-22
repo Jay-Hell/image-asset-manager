@@ -118,7 +118,9 @@ All strategies dedupe via an in-flight `usedFilenames: Set<String>` passed by re
 - `v7_drop_collections` — drops the `collections` table and the `assets.collection_id` column (SQLite table-rebuild pattern). Collections were unreachable from the UI in practice (no creation path) and overlapped conceptually with projects + tags + variants. The metadata model is now **client → project(s) + tags + variant family**, nothing else.
 - `v8_asset_media_type` — `assets.media_type` (MIME), backfilled from the extension by a frozen SQL `CASE`. **Nullable with no default on purpose:** App Store 1.0.x knows only v1–v7 (`AppDatabase.appStore1_0Migrator()`) and inserts assets without the column. Read it through `Asset.effectiveMediaType` / `mediaKind` (`image` | `vector`), which fall back to the extension. `MigrationV8Tests` proves the 1.0.x migrator still opens, reads and writes a v8 library.
 
-**Backup before migrating.** `AppDatabase.init` copies an existing library with a pending migration to `Backups/library-<UTC>.db` through SQLite's backup API (`LibraryBackup`), keeping the newest five. A failed backup throws before `migrate`. `Backups/` is not in `LibraryMigrationService`'s item list, so backups stay behind on a location change.
+**Backup before migrating.** `AppDatabase.init` copies an existing library with a pending migration to `Backups/library-<UTC>.db` through SQLite's backup API (`LibraryBackup`), keeping the newest five. Rotation never deletes the backup just taken (later-named files from clock skew can't push it out), and hidden `.library-*.db.partial*` files from a killed backup are swept before and after each one. A failed backup throws before `migrate`. `Backups/` is not in `LibraryMigrationService`'s item list, so backups stay behind on a location change.
+
+**Opening a library.** Launch and location change both go through `LibraryOpener.open(at:)`, never `LibrarySetup` + `AppDatabase` directly. It refuses (`LibraryOpenError`, nothing written, no backup, no migration) when `library.db` is an iCloud placeholder (`.library.db.icloud`), is reported not current, or is missing beside existing assets or a non-empty `index.json` — any of which would otherwise look like a fresh library and get an empty v8 database that conflicts with the real one. It starts the download; the app shows the reason and a Try Again button rather than crashing.
 
 Query logic is split by feature into extension files — add new queries in the matching extension rather than the core file:
 
@@ -287,9 +289,15 @@ xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManager
   -scheme ImageAssetManagerCore -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'
 ```
 
-**macOS app tests launch the app as their host**, and the app opens whatever library its bookmark points at — on John's Mac, the live iCloud library. With a build that adds a migration, running them migrates that library.
+**macOS app tests launch the app as their host.** Under XCTest (`TestHostIsolation.isTestHost`, from the variables XCTest sets) `AppEnvironment.make()` opens a fresh library under the temporary directory and never reads the bookmark, UserDefaults or iCloud; the window shows no library UI and the MCP listener does not start. `ImageAssetManagerTests` asserts the library the host actually opened is inside the temporary directory. Keep that test, and keep anything new at launch behind `isTestHost`.
 
-**SVG preview** (`SVGPreview`) always renders a sanitised copy (`SVGDocument.sanitisedForPreview`). macOS uses `NSImage`; on iPadOS `UIImage(data:)` returns nil for SVG, so WebKit draws it as an `<img>` with JavaScript off. WebKit does not complete loads in the package test host on the simulator, so the iPad path is only provable inside an app.
+**Three Core tests touch the login Keychain** (`NanaBananaProviderTests.generateThrowsWhenKeyMissing`, `…OnRateLimit`, `…OnInvalidKey`): they store and delete the real `nano_banana_api_key` item. On John's Mac run Core tests with `--skip "generateThrowsWhenKeyMissing|generateThrowsOnRateLimit|generateThrowsOnInvalidKey"` until they are moved off the real service name.
+
+**Content, not names.** `AssetStore.store` sniffs the bytes (`MediaType(sniffing:)`: PNG/JPEG/WebP/HEIC signatures, SVG root) and refuses a MIME label that disagrees, before writing anything. Previews go through `AssetPreview.render(contentsOf:)`, which chooses the renderer from the bytes: SVG always via the sanitiser, rasters via ImageIO, anything else not at all. Reference images sent to Gemini carry their sniffed MIME type.
+
+**SVG preview** (`SVGPreview`) always renders a sanitised copy (`SVGDocument.sanitisedForPreview`), capped at 10 MB. The sanitiser is an allow-list: static drawing elements, geometry and presentation attributes, `style` filtered to presentation properties, CSS functions limited to colour, transform and fragment `url(#…)`, no CSS escapes, no foreign namespaces. macOS uses `NSImage`; on iPadOS `UIImage(data:)` returns nil for SVG, so WebKit draws it as an `<img>` with JavaScript off. WebKit does not complete loads in the package test host on the simulator, so the iPad path is only provable inside an app.
+
+**MCP proxy tests:** `node --test mcp-server/test/`.
 
 ## Branching Strategy
 
