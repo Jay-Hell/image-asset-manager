@@ -1,32 +1,67 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
+  "revision": 2,
   "updated": "2026-10-22",
-  "fx": { "usdToGBP": 0.79 },
+  "fx": {
+    "usdToGBP": 0.79
+  },
   "media": {
     "image": {
       "tiers": {
         "fast": [
-          { "provider": "nano_banana", "model": "gemini-3.1-flash-lite-image", "usdEstimate": 0.0336 },
-          { "provider": "openrouter", "model": "google/gemini-3.1-flash-lite-image", "usdEstimate": 0.0336 }
+          {
+            "provider": "nano_banana",
+            "model": "gemini-3.1-flash-lite-image",
+            "usdEstimate": 0.0336
+          },
+          {
+            "provider": "openrouter",
+            "model": "google/gemini-3.1-flash-lite-image",
+            "usdEstimate": 0.0336
+          }
         ],
         "standard": [
-          { "provider": "nano_banana", "model": "gemini-nano-banana-2.1", "usdEstimate": 0.0336 },
-          { "provider": "openrouter", "model": "google/gemini-nano-banana-2.1", "usdEstimate": 0.0336 }
+          {
+            "provider": "nano_banana",
+            "model": "gemini-3.1-flash-image",
+            "usdEstimate": 0.067
+          },
+          {
+            "provider": "openrouter",
+            "model": "google/gemini-nano-banana-2.1",
+            "usdEstimate": 0.0336
+          }
         ],
         "pro": [
-          { "provider": "nano_banana", "model": "gemini-3-pro-image", "imageSize": "2K", "usdEstimate": 0.134 },
-          { "provider": "openrouter", "model": "google/gemini-3-pro-image", "usdEstimate": 0.134 }
+          {
+            "provider": "nano_banana",
+            "model": "gemini-3-pro-image",
+            "imageSize": "2K",
+            "usdEstimate": 0.134
+          },
+          {
+            "provider": "openrouter",
+            "model": "google/gemini-3-pro-image",
+            "usdEstimate": 0.134
+          }
         ]
       }
     },
     "vector": {
       "tiers": {
         "standard": [
-          { "provider": "openrouter", "model": "recraft/recraft-v4.1-vector", "usdEstimate": 0.08 }
+          {
+            "provider": "openrouter",
+            "model": "recraft/recraft-v4.1-vector",
+            "usdEstimate": 0.08
+          }
         ],
         "pro": [
-          { "provider": "openrouter", "model": "recraft/recraft-v4.1-pro-vector", "usdEstimate": 0.30 }
+          {
+            "provider": "openrouter",
+            "model": "recraft/recraft-v4.1-pro-vector",
+            "usdEstimate": 0.3
+          }
         ]
       }
     }
@@ -37,47 +72,115 @@
         "id": "gemini-3.1-flash-lite-image",
         "api": "gemini.generateContent",
         "displayName": "Gemini 3.1 Flash Lite Image",
-        "aspectRatios": ["1:1", "16:9", "9:16"],
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
         "maxReferenceImages": 14,
-        "imageSizes": ["1K"],
-        "usdByImageSize": { "1K": 0.0336 },
-        "body": { "generationConfig": { "imageConfig": { "imageSize": "1K" } } }
+        "imageSizes": [
+          "1K"
+        ],
+        "usdByImageSize": {
+          "1K": 0.0336
+        },
+        "body": {
+          "generationConfig": {
+            "imageConfig": {
+              "imageSize": "1K"
+            }
+          }
+        }
       },
       {
         "id": "gemini-nano-banana-2.1",
         "api": "gemini.generateContent",
         "displayName": "Nano Banana 2.1",
-        "aspectRatios": ["1:1", "16:9", "9:16"],
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
         "maxReferenceImages": 14,
-        "imageSizes": ["1K", "2K", "4K"],
-        "usdByImageSize": { "1K": 0.0336, "2K": 0.0504, "4K": 0.113 },
-        "body": { "generationConfig": { "imageConfig": { "imageSize": "1K" } } }
+        "imageSizes": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "usdByImageSize": {
+          "1K": 0.0336,
+          "2K": 0.0504,
+          "4K": 0.113
+        },
+        "body": {
+          "generationConfig": {
+            "imageConfig": {
+              "imageSize": "1K"
+            }
+          }
+        }
       },
       {
         "id": "gemini-3-pro-image",
         "api": "gemini.generateContent",
         "displayName": "Gemini 3 Pro Image",
-        "aspectRatios": ["1:1", "16:9", "9:16"],
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
         "maxReferenceImages": 14,
-        "imageSizes": ["1K", "2K", "4K"],
-        "usdByImageSize": { "1K": 0.134, "2K": 0.134, "4K": 0.24 },
-        "body": { "generationConfig": { "imageConfig": { "imageSize": "2K" } } }
+        "imageSizes": [
+          "1K",
+          "2K",
+          "4K"
+        ],
+        "usdByImageSize": {
+          "1K": 0.134,
+          "2K": 0.134,
+          "4K": 0.24
+        },
+        "body": {
+          "generationConfig": {
+            "imageConfig": {
+              "imageSize": "2K"
+            }
+          }
+        }
       },
       {
         "id": "gemini-3.1-flash-image",
         "api": "gemini.generateContent",
         "displayName": "Gemini 3.1 Flash Image",
-        "aspectRatios": ["1:1", "16:9", "9:16"],
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
         "maxReferenceImages": 14,
-        "imageSizes": ["1K"],
-        "usdByImageSize": { "1K": 0.067 },
-        "body": { "generationConfig": { "imageConfig": { "imageSize": "1K" } } }
+        "imageSizes": [
+          "1K"
+        ],
+        "usdByImageSize": {
+          "1K": 0.067
+        },
+        "body": {
+          "generationConfig": {
+            "imageConfig": {
+              "imageSize": "1K"
+            }
+          }
+        }
       },
       {
         "id": "gemini-2.5-flash-image",
         "api": "gemini.generateContent",
         "displayName": "Gemini 2.5 Flash Image",
-        "aspectRatios": ["1:1", "16:9", "9:16"],
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
         "maxReferenceImages": 3,
         "usdEstimate": 0.039,
         "body": {}
@@ -85,14 +188,34 @@
     ]
   },
   "retired": [
-    { "id": "imagen-4.0-fast-generate-001", "displayName": "Fast — Draft (Imagen 4)", "replacedBy": "gemini-3.1-flash-lite-image" },
-    { "id": "imagen-4.0-generate-001", "displayName": "Standard (Imagen 4)", "replacedBy": "gemini-nano-banana-2.1" },
-    { "id": "imagen-4.0-ultra-generate-001", "displayName": "Pro — Final (Imagen 4)", "replacedBy": "gemini-3-pro-image" }
+    {
+      "id": "imagen-4.0-fast-generate-001",
+      "displayName": "Fast \u2014 Draft (Imagen 4)",
+      "replacedBy": "gemini-3.1-flash-lite-image"
+    },
+    {
+      "id": "imagen-4.0-generate-001",
+      "displayName": "Standard (Imagen 4)",
+      "replacedBy": "gemini-nano-banana-2.1"
+    },
+    {
+      "id": "imagen-4.0-ultra-generate-001",
+      "displayName": "Pro \u2014 Final (Imagen 4)",
+      "replacedBy": "gemini-3-pro-image"
+    }
   ],
   "refinement": {
     "api": "anthropic.messages",
     "model": "claude-sonnet-5-5",
-    "headers": { "anthropic-beta": "server-side-fallback-2026-07-01" },
-    "body": { "max_tokens": 4096, "output_config": { "effort": "low" }, "fallbacks": "default" }
+    "headers": {
+      "anthropic-beta": "server-side-fallback-2026-07-01"
+    },
+    "body": {
+      "max_tokens": 4096,
+      "output_config": {
+        "effort": "low"
+      },
+      "fallbacks": "default"
+    }
   }
 }
