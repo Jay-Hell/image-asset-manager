@@ -14,11 +14,18 @@ final class AppEnvironment {
         self.libraryURL = libraryURL
     }
 
+    /// True when XCTest launched this process as the app tests' host.
+    static let isTestHost = TestHostIsolation.isTestHost()
+
+    /// The library the last `make()` opened; the app tests assert it is a temporary one.
+    private(set) static var openedLibraryURL: URL?
+
     static func make() throws -> AppEnvironment {
-        let url = resolveLibraryURL()
-        try LibrarySetup.initialise(at: url)
-        let dbPath = url.appending(path: "library.db").path(percentEncoded: false)
-        let db = try AppDatabase(path: dbPath)
+        // A test host never resolves the bookmark, UserDefaults or iCloud: it gets a fresh,
+        // empty library under the temporary directory, so app tests cannot reach John's.
+        let url = isTestHost ? try TestHostIsolation.makeTemporaryLibrary() : resolveLibraryURL()
+        let db = try LibraryOpener.open(at: url)
+        openedLibraryURL = url
         return AppEnvironment(database: db, libraryURL: url)
     }
 
@@ -33,12 +40,9 @@ final class AppEnvironment {
 
         AppEnvironment.persistBookmark(for: destinationURL)
 
-        // Ensure the expected folder structure exists at the new location.
-        try LibrarySetup.initialise(at: destinationURL)
-
-        // Open a new database connection at the new path; ARC releases the old one.
-        let dbPath = destinationURL.appending(path: "library.db").path(percentEncoded: false)
-        let newDB = try AppDatabase(path: dbPath)
+        // Set up the folder structure and open the database at the new path, through the same
+        // checks as launch; ARC releases the old connection.
+        let newDB = try LibraryOpener.open(at: destinationURL)
 
         database = newDB
         libraryURL = destinationURL
