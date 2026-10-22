@@ -2,184 +2,330 @@ import Testing
 import Foundation
 @testable import ImageAssetManagerCore
 
-// MARK: - Mock URLProtocol
+/// A provider wired to a fake Google and a fake catalogue host.
+private struct ProviderRig {
+    let google: StubSession
+    let remote: StubSession
+    let store: CatalogueStore
+    let provider: NanaBananaProvider
 
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        guard let handler = Self.handler else {
-            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
-        }
+    init(
+        catalogue: Catalogue? = nil,
+        remoteBody: Data? = nil,
+        apiKey: @escaping @Sendable () throws -> String = { "test-key-123" },
+        google handler: @escaping StubSession.Handler
+    ) throws {
+        google = StubSession(handler)
+        let body = remoteBody ?? Data()
+        remote = StubSession(status: remoteBody == nil ? 404 : 200, body: body)
+        store = CatalogueStore(
+            bundled: try catalogue ?? RepoCatalogue.parsed(),
+            directory: makeTempDirectory(),
+            remoteURL: URL(string: "https://example.test/models.json")!,
+            session: remote.session,
+            build: 0
+        )
+        provider = NanaBananaProvider(catalogue: store, apiKey: apiKey)
     }
 
-    override func stopLoading() {}
+    func params(quality: String = "standard", aspect: AspectRatio = .square, resolution: String? = nil,
+                prompt: String = "A test landscape", negative: String? = nil,
+                catalogue: Catalogue? = nil) throws -> GenerationParams {
+        let res = try ModelResolver.resolve(
+            ResolveRequest(quality: quality, aspectRatio: aspect.rawValue, resolution: resolution),
+            catalogue: catalogue ?? store.snapshot(), providers: ["nano_banana"])
+        return GenerationParams(prompt: prompt, negativePrompt: negative, model: res.imageModel,
+                                aspectRatio: aspect, width: 1024, height: 1024)
+    }
 }
 
-// MARK: - Helpers
+private func ok() -> StubSession.Handler { { _ in (200, geminiSuccessBody(), [:]) } }
 
-private func makeSession() -> URLSession {
-    let config = URLSessionConfiguration.ephemeral
-    config.protocolClasses = [MockURLProtocol.self]
-    return URLSession(configuration: config)
+private func reference(_ id: String) -> ReferenceInput {
+    ReferenceInput(assetID: id, imageData: Data([1, 2, 3]), role: .subjectAnchor)
 }
 
-private func mockImageData() -> Data {
-    // 1×1 red PNG
-    Data([
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
-        0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
-        0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC,
-        0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
-        0x44, 0xAE, 0x42, 0x60, 0x82,
-    ])
-}
-
-private func makeImagenSuccessResponse(imageData: Data) throws -> Data {
-    let payload: [String: Any] = [
-        "predictions": [["bytesBase64Encoded": imageData.base64EncodedString(), "mimeType": "image/png"]]
-    ]
-    return try JSONSerialization.data(withJSONObject: payload)
-}
-
-private func makeGeminiSuccessResponse(imageData: Data) throws -> Data {
-    let payload: [String: Any] = [
-        "candidates": [[
-            "content": [
-                "parts": [[
-                    "inlineData": [
-                        "mimeType": "image/png",
-                        "data": imageData.base64EncodedString(),
-                    ],
-                ]],
-            ],
-        ]],
-    ]
-    return try JSONSerialization.data(withJSONObject: payload)
-}
-
-private func makeHTTPResponse(statusCode: Int) -> HTTPURLResponse {
-    HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
-}
-
-private func makeParams(modelID: String = NanaBananaProvider.ModelID.imagenStandard, cost: Decimal = 0.04) -> GenerationParams {
-    GenerationParams(
-        prompt: "A test landscape",
-        model: ImageModel(id: modelID, displayName: "Test", supportedAspectRatios: [.square], costPerImage: cost),
-        aspectRatio: .square,
-        width: 1024,
-        height: 1024
-    )
-}
-
-// MARK: - Tests
-
-@Suite("NanaBananaProvider", .serialized)
+@Suite("NanaBananaProvider")
 struct NanaBananaProviderTests {
-    let provider = NanaBananaProvider()
 
-    @Test func availableModelsIncludesThreeImagenTiersAndGemini() {
-        let ids = provider.availableModels.map(\.id)
-        #expect(ids.contains(NanaBananaProvider.ModelID.imagenFast))
-        #expect(ids.contains(NanaBananaProvider.ModelID.imagenStandard))
-        #expect(ids.contains(NanaBananaProvider.ModelID.imagenUltra))
-        #expect(ids.contains(NanaBananaProvider.ModelID.geminiWithRefs))
+    // MARK: - Catalogue-driven models
+
+    @Test func theModelListComesFromTheCatalogueInTierOrderWithGBPPrices() throws {
+        let rig = try ProviderRig(google: ok())
+        let models = rig.provider.availableModels
+        #expect(models.map(\.id) == [
+            "gemini-3.1-flash-lite-image", "gemini-nano-banana-2.1", "gemini-3-pro-image",
+            "gemini-3.1-flash-image", "gemini-2.5-flash-image",
+        ])
+        // Hand-worked: USD x 0.79.
+        #expect(models[0].costPerImage == Decimal(string: "0.026544"))
+        #expect(models[2].costPerImage == Decimal(string: "0.10586"))
+        #expect(models[4].costPerImage == Decimal(string: "0.03081"))
+        #expect(models.map(\.id).allSatisfy { !$0.contains("imagen") })
+        #expect(rig.provider.maxReferenceImages == 14)
+        #expect(rig.provider.providerID == "nano_banana")
     }
 
-    @Test func imagenTiersAreOrderedByCost() {
-        let fast = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenFast }!
-        let std  = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenStandard }!
-        let ultra = provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.imagenUltra }!
-        #expect(fast.costPerImage < std.costPerImage)
-        #expect(std.costPerImage < ultra.costPerImage)
+    @Test func aNewCatalogueRevisionChangesTheListWithoutAnyCodeChange() async throws {
+        let rig = try ProviderRig(
+            remoteBody: try RepoCatalogue.json { root in
+                root["revision"] = 2
+                var list = modelList(root)
+                list.append(["id": "gemini-brand-new", "api": "gemini.generateContent", "displayName": "Brand New",
+                             "aspectRatios": ["1:1"], "maxReferenceImages": 2, "usdEstimate": 0.5])
+                setModelList(&root, list)
+            },
+            google: ok())
+        #expect(!rig.provider.availableModels.map(\.id).contains("gemini-brand-new"))
+        await rig.store.refresh()
+        #expect(rig.provider.availableModels.map(\.id).last == "gemini-brand-new")
     }
 
-    @Test func onlyGeminiModelSupportsReferences() {
-        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenFast))
-        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenStandard))
-        #expect(!NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.imagenUltra))
-        #expect(NanaBananaProvider.supportsReferences(modelID: NanaBananaProvider.ModelID.geminiWithRefs))
+    // MARK: - T5: the request that leaves the process
+
+    @Test func t5_theRequestCarriesTheCatalogueModelInThePathAndItsImageSizeInTheBody() async throws {
+        let rig = try ProviderRig(google: ok())
+        let params = try rig.params(quality: "standard", aspect: .landscape)
+
+        _ = try await rig.provider.generate(params, references: nil, session: rig.google.session)
+
+        let sent = try #require(rig.google.requests.first)
+        #expect(rig.google.requests.count == 1)
+        #expect(sent.method == "POST")
+        #expect(sent.url.absoluteString ==
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-nano-banana-2.1:generateContent")
+        #expect(sent.headers["x-goog-api-key"] == "test-key-123")
+        #expect(!sent.url.absoluteString.contains("test-key-123"))   // never in the URL
+        #expect(sent.headers["content-type"] == "application/json")
+
+        let body = try #require(sent.bodyJSON)
+        let config = try #require(body["generationConfig"] as? [String: Any])
+        #expect(config["responseModalities"] as? [String] == ["IMAGE"])
+        let image = try #require(config["imageConfig"] as? [String: Any])
+        #expect(image["imageSize"] as? String == "1K")
+        #expect(image["aspectRatio"] as? String == "16:9")
+        let contents = try #require(body["contents"] as? [[String: Any]])
+        let parts = try #require(contents.first?["parts"] as? [[String: Any]])
+        #expect(parts.count == 1)
+        #expect(parts[0]["text"] as? String == "A test landscape")
     }
 
-    @Test func estimateCostReturnsModelRate() {
-        let params = makeParams(modelID: NanaBananaProvider.ModelID.imagenStandard, cost: 0.04)
-        #expect(provider.estimateCost(params) == Decimal(string: "0.04"))
-    }
-
-    @Test func modelCostsAreGBPConvertedFromPublishedUSDPrices() {
-        // Published Google USD prices per image — pin the conversion path so a drift in
-        // Currency.usdToGBP or a bad edit in availableModels shows up immediately.
-        let expected: [(String, Decimal)] = [
-            (NanaBananaProvider.ModelID.imagenFast,     Currency.gbp(fromUSD: 0.02)),
-            (NanaBananaProvider.ModelID.imagenStandard, Currency.gbp(fromUSD: 0.04)),
-            (NanaBananaProvider.ModelID.imagenUltra,    Currency.gbp(fromUSD: 0.06)),
-            (NanaBananaProvider.ModelID.geminiWithRefs, Currency.gbp(fromUSD: 0.039)),
-        ]
-        for (id, expectedCost) in expected {
-            let model = provider.availableModels.first { $0.id == id }
-            #expect(model?.costPerImage == expectedCost)
+    @Test func t5_everyTierGoesToGenerateContentNeverPredict() async throws {
+        let rig = try ProviderRig(google: ok())
+        for quality in ["fast", "standard", "pro"] {
+            _ = try await rig.provider.generate(try rig.params(quality: quality), references: nil, session: rig.google.session)
         }
+        let paths = rig.google.requests.map(\.url.path)
+        #expect(paths == [
+            "/v1beta/models/gemini-3.1-flash-lite-image:generateContent",
+            "/v1beta/models/gemini-nano-banana-2.1:generateContent",
+            "/v1beta/models/gemini-3-pro-image:generateContent",
+        ])
+        #expect(!paths.contains { $0.contains(":predict") })
     }
 
-    @Test func generateThrowsWhenKeyMissing() async throws {
-        try? KeychainService.delete(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
+    @Test func t5_theProTierSendsItsOwn2KAndARequestedResolutionBeatsTheCatalogueDefault() async throws {
+        let rig = try ProviderRig(google: ok())
+        _ = try await rig.provider.generate(try rig.params(quality: "pro"), references: nil, session: rig.google.session)
+        _ = try await rig.provider.generate(try rig.params(quality: "standard", resolution: "4K"), references: nil, session: rig.google.session)
 
-        await #expect(throws: ProviderError.self) {
-            try await provider.generate(makeParams(), references: nil)
+        func size(_ i: Int) throws -> String? {
+            let config = try #require(rig.google.requests[i].bodyJSON?["generationConfig"] as? [String: Any])
+            return (config["imageConfig"] as? [String: Any])?["imageSize"] as? String
         }
+        #expect(try size(0) == "2K")
+        #expect(try size(1) == "4K")   // the entry's body says 1K; the request wins
     }
 
-    @Test func imagenResponseParsesPredictionShape() throws {
-        let imgData = mockImageData()
-        let responseBody = try makeImagenSuccessResponse(imageData: imgData)
-        let result = try provider.parseImagenResponseForTesting(responseBody)
+    @Test func t5_appOwnedFieldsBeatAnythingTheCatalogueBodySays() async throws {
+        let hostile = try RepoCatalogue.parsed { root in
+            var list = modelList(root)
+            list[1]["body"] = [
+                "contents": "overwritten by the catalogue",
+                "generationConfig": [
+                    "responseModalities": ["TEXT"],
+                    "imageConfig": ["aspectRatio": "21:9", "imageSize": "2K"],
+                    "topK": 7,
+                ] as [String: Any],
+            ] as [String: Any]
+            setModelList(&root, list)
+        }
+        let rig = try ProviderRig(catalogue: hostile, google: ok())
+        let params = try rig.params(quality: "standard", aspect: .portrait, resolution: "4K", prompt: "owned prompt", negative: "no cats")
+        _ = try await rig.provider.generate(params, references: nil, session: rig.google.session)
+
+        let body = try #require(rig.google.requests.first?.bodyJSON)
+        let contents = try #require(body["contents"] as? [[String: Any]])
+        let parts = try #require(contents.first?["parts"] as? [[String: Any]])
+        #expect(parts[0]["text"] as? String == "owned prompt\n\nAvoid: no cats")
+        let config = try #require(body["generationConfig"] as? [String: Any])
+        #expect(config["responseModalities"] as? [String] == ["IMAGE"])
+        let image = try #require(config["imageConfig"] as? [String: Any])
+        #expect(image["aspectRatio"] as? String == "9:16")
+        #expect(image["imageSize"] as? String == "4K")      // the request's size, not the catalogue's "2K"
+        // The pair: a catalogue field the app does not own still flows through.
+        #expect(config["topK"] as? Int == 7)
+    }
+
+    // MARK: - Reference cap comes from the model entry
+
+    @Test func theReferenceCapIsTheModelEntrysNotAFixedThree() async throws {
+        let rig = try ProviderRig(google: ok())
+        let refs = (1...5).map { reference("r\($0)") }
+
+        // Standard: 14. All five go.
+        _ = try await rig.provider.generate(try rig.params(quality: "standard"), references: refs, session: rig.google.session)
+        // Gemini 2.5 Flash Image: 3. Only three go.
+        let old = try ModelResolver.resolve(ResolveRequest(explicitModel: "nano_banana:gemini-2.5-flash-image"),
+                                            catalogue: rig.store.snapshot(), providers: ["nano_banana"])
+        let oldParams = GenerationParams(prompt: "p", model: old.imageModel, aspectRatio: .square, width: 1, height: 1)
+        _ = try await rig.provider.generate(oldParams, references: refs, session: rig.google.session)
+
+        func inlineCount(_ i: Int) throws -> Int {
+            let contents = try #require(rig.google.requests[i].bodyJSON?["contents"] as? [[String: Any]])
+            let parts = try #require(contents.first?["parts"] as? [[String: Any]])
+            return parts.filter { $0["inlineData"] != nil }.count
+        }
+        #expect(try inlineCount(0) == 5)
+        #expect(try inlineCount(1) == 3)
+    }
+
+    // MARK: - Response: image, seed, cost
+
+    @Test func theImageSeedAndCostAreParsedFromTheResponse() async throws {
+        // usage.cost 0.04 USD x 0.79 = 0.0316 GBP.
+        let body = geminiSuccessBody(top: ["seed": 12345, "usage": ["cost": 0.04]])
+        let rig = try ProviderRig(google: { _ in (200, body, [:]) })
+        let result = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
         #expect(result.format == "png")
         #expect(!result.data.isEmpty)
+        #expect(result.seed == "12345")
+        #expect(result.actualCost == Decimal(string: "0.0316"))
     }
 
-    @Test func geminiResponseParsesInlineDataFromCandidates() throws {
-        let imgData = mockImageData()
-        let responseBody = try makeGeminiSuccessResponse(imageData: imgData)
-        let result = try provider.parseGeminiResponseForTesting(responseBody)
-        #expect(result.format == "png")
+    @Test func aResponseWithNoSeedOrCostLeavesBothEmpty() async throws {
+        let rig = try ProviderRig(google: ok())
+        let result = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+        #expect(result.seed == nil)
+        #expect(result.actualCost == nil)
+    }
+
+    @Test func aThoughtImageIsSkippedForTheFinalOne() async throws {
+        let thought: [String: Any] = ["thought": true, "inlineData": ["mimeType": "image/jpeg", "data": "AAAA"]]
+        let body = geminiSuccessBody(extraParts: [thought])
+        let rig = try ProviderRig(google: { _ in (200, body, [:]) })
+        let result = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+        #expect(result.format == "png")   // the final image, not the jpeg thought
+    }
+
+    @Test func aResponseWithNoImageIsInvalid() async throws {
+        let rig = try ProviderRig(google: { _ in (200, Data(#"{"candidates":[{"content":{"parts":[{"text":"sorry"}]}}]}"#.utf8), [:]) })
+        await #expect(throws: ProviderError.self) {
+            try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+        }
+    }
+
+    // MARK: - Keys
+
+    @Test func aMissingKeyStopsBeforeAnyRequest() async throws {
+        let rig = try ProviderRig(apiKey: { throw KeychainService.KeychainError.itemNotFound }, google: ok())
+        do {
+            _ = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+            Issue.record("expected apiKeyNotFound")
+        } catch ProviderError.apiKeyNotFound {
+            #expect(rig.google.requests.isEmpty)
+        }
+    }
+
+    // MARK: - T9: errors
+
+    @Test func t9_a404RaisesModelUnavailableAfterOneRefreshAndOneRetry() async throws {
+        let rig = try ProviderRig(remoteBody: try RepoCatalogue.json { $0["revision"] = 2 }, google: { _ in (404, Data(), [:]) })
+        do {
+            _ = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+            Issue.record("expected modelUnavailable")
+        } catch ProviderError.modelUnavailable(let id) {
+            #expect(id == "gemini-nano-banana-2.1")
+        }
+        #expect(rig.google.requests.count == 2)   // the call and one retry, no more
+        #expect(rig.remote.requests.count == 1)   // one forced catalogue refresh
+        #expect(rig.store.status().revision == 2)
+    }
+
+    @Test func t9_theRetryRecoversWhenTheRefreshedCatalogueRetiresTheModel() async throws {
+        // Google 404s the old model; the fresh catalogue retires it in favour of another.
+        let fresh = try RepoCatalogue.json { root in
+            root["revision"] = 2
+            let kept = modelList(root).filter { ($0["id"] as? String) != "gemini-3.1-flash-image" }
+            setModelList(&root, kept)
+            root["retired"] = (root["retired"] as! [[String: Any]]) + [
+                ["id": "gemini-3.1-flash-image", "displayName": "Gone", "replacedBy": "gemini-nano-banana-2.1"],
+            ]
+        }
+        let rig = try ProviderRig(remoteBody: fresh, google: { request in
+            request.url.path.contains("gemini-3.1-flash-image") ? (404, Data(), [:]) : (200, geminiSuccessBody(), [:])
+        })
+        let old = try ModelResolver.resolve(ResolveRequest(explicitModel: "nano_banana:gemini-3.1-flash-image"),
+                                            catalogue: rig.store.snapshot(), providers: ["nano_banana"])
+        let params = GenerationParams(prompt: "p", model: old.imageModel, aspectRatio: .square, width: 1, height: 1)
+
+        let result = try await rig.provider.generate(params, references: nil, session: rig.google.session)
+
         #expect(!result.data.isEmpty)
+        #expect(rig.google.requests.map(\.url.path) == [
+            "/v1beta/models/gemini-3.1-flash-image:generateContent",
+            "/v1beta/models/gemini-nano-banana-2.1:generateContent",
+        ])
     }
 
-    @Test func generateThrowsOnRateLimit() async throws {
-        MockURLProtocol.handler = { _ in (makeHTTPResponse(statusCode: 429), Data()) }
-        try KeychainService.store("test-key", service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
-        defer { try? KeychainService.delete(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount) }
+    @Test func t9_a400IsReportedWithTheProvidersMessageAndNeverAsABadKey() async throws {
+        let message = Data(#"{"error":{"code":400,"message":"Invalid value at generationConfig.imageConfig"}}"#.utf8)
+        let rig = try ProviderRig(google: { _ in (400, message, [:]) })
+        do {
+            _ = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+            Issue.record("expected badRequest")
+        } catch ProviderError.badRequest(let text) {
+            #expect(text == "Invalid value at generationConfig.imageConfig")
+        }
+        // A 400 is not retried and does not trigger a catalogue refresh.
+        #expect(rig.google.requests.count == 1)
+        #expect(rig.remote.requests.isEmpty)
+    }
 
-        let session = makeSession()
-        await #expect(throws: ProviderError.self) {
-            try await provider.generate(makeParams(), references: nil, session: session)
+    @Test func t9_theErrorTextOfA400NamesTheProblemNotTheKey() {
+        let e = ProviderError.badRequest("Invalid value at generationConfig")
+        #expect(e.errorDescription?.contains("Invalid value at generationConfig") == true)
+        #expect(e.errorDescription?.lowercased().contains("api key") == false)
+    }
+
+    @Test func t9_401And403AreBadKeys429IsRateLimitOtherStatusesAreFailures() async throws {
+        for status in [401, 403] {
+            let rig = try ProviderRig(google: { _ in (status, Data(), [:]) })
+            do {
+                _ = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+                Issue.record("expected invalidAPIKey for \(status)")
+            } catch ProviderError.invalidAPIKey {
+                #expect(rig.google.requests.count == 1)
+            }
+        }
+        let limited = try ProviderRig(google: { _ in (429, Data(), [:]) })
+        do {
+            _ = try await limited.provider.generate(try limited.params(), references: nil, session: limited.google.session)
+            Issue.record("expected rateLimited")
+        } catch ProviderError.rateLimited {}
+
+        let broken = try ProviderRig(google: { _ in (500, Data(#"{"error":{"message":"backend down"}}"#.utf8), [:]) })
+        do {
+            _ = try await broken.provider.generate(try broken.params(), references: nil, session: broken.google.session)
+            Issue.record("expected generationFailed")
+        } catch ProviderError.generationFailed(let text) {
+            #expect(text == "backend down")
         }
     }
 
-    @Test func generateThrowsOnInvalidKey() async throws {
-        MockURLProtocol.handler = { _ in (makeHTTPResponse(statusCode: 401), Data()) }
-        try KeychainService.store("bad-key", service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
-        defer { try? KeychainService.delete(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount) }
-
-        let session = makeSession()
-        await #expect(throws: ProviderError.self) {
-            try await provider.generate(makeParams(), references: nil, session: session)
-        }
+    @Test func estimateCostIsTheResolvedModelsRate() throws {
+        let rig = try ProviderRig(google: ok())
+        let params = try rig.params(quality: "pro")
+        #expect(rig.provider.estimateCost(params) == Decimal(string: "0.10586"))
     }
 }

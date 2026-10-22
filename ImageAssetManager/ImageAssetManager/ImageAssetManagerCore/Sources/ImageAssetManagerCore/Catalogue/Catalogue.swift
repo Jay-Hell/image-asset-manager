@@ -94,6 +94,8 @@ public struct Catalogue: Sendable, Equatable {
     /// Request shapes compiled into this build, by catalogue `api` string.
     public static let knownModelAPIs: Set<String> = ["gemini.generateContent"]
     public static let knownRefinementAPI = "anthropic.messages"
+    /// Providers this build can call. Routes to others load but are skipped at resolve time.
+    public static let compiledProviders: Set<String> = ["nano_banana"]
     /// Tiers the app cannot work without.
     public static let requiredImageTiers = ["fast", "standard", "pro"]
 
@@ -232,7 +234,16 @@ public struct Catalogue: Sendable, Equatable {
                     case .failure(let reason): skipped.append("\(mediaName)/\(tierName): \(reason)")
                     }
                 }
-                guard !routes.isEmpty else { throw ParseError.noUsableModel("\(mediaName)/\(tierName)") }
+                // "Usable" means usable by this build: a route to a provider it does not
+                // have (openrouter, until pass B) is kept but does not count. Image tiers
+                // must have a usable route; any other tier is refused only if it had one
+                // as authored and lost it.
+                let authoredUsable = routeItems.filter { compiledProviders.contains($0["provider"] as? String ?? "") }.count
+                let survivingUsable = routes.filter { compiledProviders.contains($0.provider) }.count
+                let needsUsable = mediaName == "image" || authoredUsable > 0
+                guard !routes.isEmpty, !needsUsable || survivingUsable > 0 else {
+                    throw ParseError.noUsableModel("\(mediaName)/\(tierName)")
+                }
                 parsedTiers[tierName] = routes
             }
             media[mediaName] = parsedTiers
@@ -344,6 +355,12 @@ public struct Catalogue: Sendable, Equatable {
         let body = (item["body"] as? [String: Any]).flatMap { JSONValue(any: $0)?.objectValue } ?? [:]
         let refs = (item["maxReferenceImages"] as? NSNumber)?.intValue ?? 0
         guard refs >= 0, refs <= 32 else { return .failure(.init("maxReferenceImages out of bounds")) }
+
+        let sizes = (item["imageSizes"] as? [String]) ?? []
+        let defaultSize = body["generationConfig"]?.objectValue?["imageConfig"]?.objectValue?["imageSize"]?.stringValue
+        if let defaultSize, !sizes.isEmpty, !sizes.contains(defaultSize) {
+            return .failure(.init("body imageSize \(defaultSize) is not in imageSizes"))
+        }
 
         return .success(Model(
             id: id,

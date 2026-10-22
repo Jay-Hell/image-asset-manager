@@ -76,7 +76,7 @@ struct ReferenceMergeTests {
     }
 
     @Test func emptyInputsProduceEmptyOutput() {
-        let merged = GenerationPolicy.mergeReferences(project: [], explicit: [])
+        let merged = GenerationPolicy.mergeReferences(project: [], explicit: [], maxReferences: 3)
         #expect(merged.references.isEmpty)
         #expect(!merged.truncated)
     }
@@ -84,7 +84,8 @@ struct ReferenceMergeTests {
     @Test func projectOnlyPassesThrough() {
         let merged = GenerationPolicy.mergeReferences(
             project: [makeRef("a"), makeRef("b")],
-            explicit: []
+            explicit: [],
+            maxReferences: 3
         )
         #expect(merged.references.map(\.input.assetID) == ["a", "b"])
         #expect(!merged.truncated)
@@ -93,7 +94,8 @@ struct ReferenceMergeTests {
     @Test func explicitOnlyPassesThrough() {
         let merged = GenerationPolicy.mergeReferences(
             project: [],
-            explicit: [makeRef("x"), makeRef("y")]
+            explicit: [makeRef("x"), makeRef("y")],
+            maxReferences: 3
         )
         #expect(merged.references.map(\.input.assetID) == ["x", "y"])
         #expect(!merged.truncated)
@@ -102,89 +104,33 @@ struct ReferenceMergeTests {
     @Test func projectComesBeforeExplicit() {
         let merged = GenerationPolicy.mergeReferences(
             project: [makeRef("p1"), makeRef("p2")],
-            explicit: [makeRef("e1")]
+            explicit: [makeRef("e1")],
+            maxReferences: 3
         )
         #expect(merged.references.map(\.input.assetID) == ["p1", "p2", "e1"])
         #expect(!merged.truncated)
     }
 
-    @Test func truncatesAtThreeWithProjectPriority() {
+    @Test func truncatesAtTheCapWithProjectPriority() {
         let merged = GenerationPolicy.mergeReferences(
             project: [makeRef("p1"), makeRef("p2")],
-            explicit: [makeRef("e1"), makeRef("e2")]
+            explicit: [makeRef("e1"), makeRef("e2")],
+            maxReferences: 3
         )
         #expect(merged.references.map(\.input.assetID) == ["p1", "p2", "e1"])
         #expect(merged.truncated)
     }
-}
 
-@Suite("GenerationPolicy.Routing")
-struct QualityRoutingTests {
-
-    @Test func fastMapsToImagenFast() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "fast", hasReferences: false)
-        #expect(r.modelID == NanaBananaProvider.ModelID.imagenFast)
-        #expect(!r.autoRouted)
-    }
-
-    @Test func standardMapsToImagenStandard() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "standard", hasReferences: false)
-        #expect(r.modelID == NanaBananaProvider.ModelID.imagenStandard)
-        #expect(!r.autoRouted)
-    }
-
-    @Test func proMapsToImagenUltra() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "pro", hasReferences: false)
-        #expect(r.modelID == NanaBananaProvider.ModelID.imagenUltra)
-        #expect(!r.autoRouted)
-    }
-
-    @Test func withReferencesMapsToGemini() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "with_references", hasReferences: true)
-        #expect(r.modelID == NanaBananaProvider.ModelID.geminiWithRefs)
-        #expect(!r.autoRouted)
-    }
-
-    @Test func autoPicksStandardWhenNoReferences() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "auto", hasReferences: false)
-        #expect(r.modelID == NanaBananaProvider.ModelID.imagenStandard)
-        #expect(!r.autoRouted)
-    }
-
-    @Test func autoPicksGeminiWhenReferencesPresent() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "auto", hasReferences: true)
-        #expect(r.modelID == NanaBananaProvider.ModelID.geminiWithRefs)
-        // auto is an explicit choice, not a rerouting
-        #expect(!r.autoRouted)
-    }
-
-    @Test func proWithRefsAutoRoutesToGemini() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "pro", hasReferences: true)
-        #expect(r.modelID == NanaBananaProvider.ModelID.geminiWithRefs)
-        #expect(r.autoRouted)
-    }
-
-    @Test func fastWithRefsAutoRoutesToGemini() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "fast", hasReferences: true)
-        #expect(r.modelID == NanaBananaProvider.ModelID.geminiWithRefs)
-        #expect(r.autoRouted)
-    }
-
-    @Test func standardWithRefsAutoRoutesToGemini() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "standard", hasReferences: true)
-        #expect(r.modelID == NanaBananaProvider.ModelID.geminiWithRefs)
-        #expect(r.autoRouted)
-    }
-
-    @Test func unknownQualityThrows() {
-        #expect(throws: GenerationPolicy.QualityError.self) {
-            try GenerationPolicy.chooseModel(quality: "ultra-ultra", hasReferences: false)
-        }
-    }
-
-    @Test func qualityIsCaseInsensitive() throws {
-        let r = try GenerationPolicy.chooseModel(quality: "FAST", hasReferences: false)
-        #expect(r.modelID == NanaBananaProvider.ModelID.imagenFast)
+    @Test func aHigherCapKeepsWhatAThreeCapWouldDrop() {
+        // The cap comes from the resolved model, not a fixed 3: the same four
+        // references that were truncated above all pass at a cap of 14.
+        let merged = GenerationPolicy.mergeReferences(
+            project: [makeRef("p1"), makeRef("p2")],
+            explicit: [makeRef("e1"), makeRef("e2")],
+            maxReferences: 14
+        )
+        #expect(merged.references.map(\.input.assetID) == ["p1", "p2", "e1", "e2"])
+        #expect(!merged.truncated)
     }
 }
 

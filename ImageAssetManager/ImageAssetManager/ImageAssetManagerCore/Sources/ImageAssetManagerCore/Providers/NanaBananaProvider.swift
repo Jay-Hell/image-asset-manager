@@ -1,67 +1,71 @@
 import Foundation
 
+/// Google Gemini direct. The provider ID `nano_banana` is stored on existing assets
+/// and projects, so it stays; the user sees "Google Gemini".
+///
+/// Every model is a catalogue entry (`CatalogueStore`): its ID goes in the URL path,
+/// its `body` is merged under the app-owned fields, and its reference cap, sizes and
+/// aspect ratios come from the entry. There are no model IDs in this file.
 public struct NanaBananaProvider: ImageProvider {
     public static let keychainService = "com.Ionic.ImageAssetManager"
     public static let keychainAccount = "nano_banana_api_key"
+    public static let id = "nano_banana"
 
     private static let apiBase = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    // Model IDs exposed to the rest of the app. Bump these in one place when
-    // Google deprecates (gemini-2.5-flash-image retires on 2026-10-02 in favour
-    // of gemini-3.1-flash-image-preview).
-    public enum ModelID {
-        public static let imagenFast      = "imagen-4.0-fast-generate-001"
-        public static let imagenStandard  = "imagen-4.0-generate-001"
-        public static let imagenUltra     = "imagen-4.0-ultra-generate-001"
-        public static let geminiWithRefs  = "gemini-2.5-flash-image"
-    }
-
-    public let providerID = "nano_banana"
-    public let displayName = "Nano Banana"
+    public let providerID = NanaBananaProvider.id
+    public let displayName = "Google Gemini"
     public let supportsReferenceImages = true
-    public let maxReferenceImages = 3
     public let supportedReferenceRoles: [ReferenceRole] = [.styleAnchor, .subjectAnchor]
-
-    // Source of truth for costs: Google's published USD prices per image, converted to GBP
-    // via Currency.gbp(fromUSD:). The rest of the app stores and displays GBP throughout.
-    public let availableModels: [ImageModel] = [
-        ImageModel(id: ModelID.imagenFast,
-                   displayName: "Fast — Draft",
-                   supportedAspectRatios: [.square, .landscape, .portrait],
-                   costPerImage: Currency.gbp(fromUSD: 0.02)),
-        ImageModel(id: ModelID.imagenStandard,
-                   displayName: "Standard",
-                   supportedAspectRatios: [.square, .landscape, .portrait],
-                   costPerImage: Currency.gbp(fromUSD: 0.04)),
-        ImageModel(id: ModelID.imagenUltra,
-                   displayName: "Pro — Final",
-                   supportedAspectRatios: [.square, .landscape, .portrait],
-                   costPerImage: Currency.gbp(fromUSD: 0.06)),
-        ImageModel(id: ModelID.geminiWithRefs,
-                   displayName: "With References",
-                   supportedAspectRatios: [.square, .landscape, .portrait],
-                   costPerImage: Currency.gbp(fromUSD: 0.039)),
-    ]
-
     public let supportedAspectRatios: [AspectRatio] = [.square, .landscape, .portrait, .custom]
 
+    private let catalogue: CatalogueStore
     private let apiKeyLookup: @Sendable () throws -> String
 
     /// `apiKey` defaults to the Keychain; tests inject their own so they never touch the real key.
-    public init(apiKey: @escaping @Sendable () throws -> String = {
-        try KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
-    }) {
+    public init(
+        catalogue: CatalogueStore = .shared,
+        apiKey: @escaping @Sendable () throws -> String = {
+            try KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
+        }
+    ) {
+        self.catalogue = catalogue
         self.apiKeyLookup = apiKey
     }
 
-    /// Only the Gemini model accepts reference images on this API; Imagen 4 tiers are text-only.
-    public static func supportsReferences(modelID: String) -> Bool {
-        modelID == ModelID.geminiWithRefs
+    // MARK: - Models (from the catalogue)
+
+    /// Tier models first (fast, standard, pro), then the rest, each priced as the resolver prices it.
+    public var availableModels: [ImageModel] {
+        let snapshot = catalogue.snapshot()
+        var ordered: [String] = []
+        for tier in ["fast", "standard", "pro"] {
+            for route in snapshot.routes(media: "image", tier: tier)
+            where route.provider == providerID && !ordered.contains(route.model) {
+                ordered.append(route.model)
+            }
+        }
+        for model in snapshot.models[providerID] ?? [] where !ordered.contains(model.id) {
+            ordered.append(model.id)
+        }
+        return ordered.compactMap { id in
+            try? ModelResolver.resolveSelection(
+                provider: providerID, modelID: id, referenceCount: 0, aspectRatio: "1:1",
+                catalogue: snapshot, providers: [providerID]
+            ).imageModel
+        }
+    }
+
+    /// The largest reference cap of any model; the per-model cap is what a request obeys.
+    public var maxReferenceImages: Int {
+        (catalogue.snapshot().models[providerID] ?? []).map(\.maxReferenceImages).max() ?? 0
     }
 
     public func estimateCost(_ params: GenerationParams) -> Decimal {
         params.model.costPerImage
     }
+
+    // MARK: - Generate
 
     public func generate(_ params: GenerationParams, references: [ReferenceInput]?) async throws -> GeneratedImage {
         try await generate(params, references: references, session: .shared)
@@ -75,118 +79,81 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.apiKeyNotFound
         }
 
-        if params.model.id == ModelID.geminiWithRefs {
-            return try await generateGemini(params: params, references: references, apiKey: apiKey, session: session)
-        } else {
-            return try await generateImagen(params: params, apiKey: apiKey, session: session)
+        do {
+            return try await attempt(params, references: references, apiKey: apiKey, session: session)
+        } catch ProviderError.modelUnavailable {
+            // Spec v0.1 §4.4: a 404 forces one catalogue refresh and one retry.
+            await catalogue.refreshAfterModelUnavailable()
+            return try await attempt(params, references: references, apiKey: apiKey, session: session)
         }
     }
 
-    // MARK: - Imagen 4 path (:predict)
-
-    private func generateImagen(params: GenerationParams, apiKey: String, session: URLSession) async throws -> GeneratedImage {
-        let endpoint = "\(Self.apiBase)/\(params.model.id):predict"
-        let body = buildImagenRequest(params: params)
-        let request = try buildURLRequest(endpoint: endpoint, apiKey: apiKey, body: body)
-        let data = try await send(request, using: session)
-        return try parseImagenResponse(data)
-    }
-
-    private func buildImagenRequest(params: GenerationParams) -> [String: Any] {
-        var prompt = params.prompt
-        if let neg = params.negativePrompt, !neg.isEmpty {
-            prompt += "\n\nAvoid: \(neg)"
+    private func attempt(_ params: GenerationParams, references: [ReferenceInput]?, apiKey: String, session: URLSession) async throws -> GeneratedImage {
+        let snapshot = catalogue.snapshot()
+        // A model retired since the request was built goes to its replacement.
+        let live = snapshot.model(provider: providerID, id: params.model.id) != nil
+            ? params.model.id
+            : (snapshot.replacement(for: params.model.id) ?? params.model.id)
+        guard let entry = snapshot.model(provider: providerID, id: live) else {
+            throw ProviderError.modelUnavailable(params.model.id)
         }
 
-        let instance: [String: Any] = ["prompt": prompt]
+        let request = try Self.urlRequest(entry: entry, params: params, references: references, apiKey: apiKey)
+        let data = try await send(request, modelID: entry.id, using: session)
+        return try Self.parseResponse(data, usdToGBP: snapshot.fx)
+    }
 
-        var apiAspectRatio = params.aspectRatio.rawValue
-        if params.aspectRatio == .custom {
-            let ratio = Double(params.width) / Double(params.height)
-            apiAspectRatio = ratio > 1.2 ? "16:9" : ratio < 0.8 ? "9:16" : "1:1"
+    // MARK: - Request
+
+    /// The request that leaves the process. Internal so tests assert on it directly.
+    static func urlRequest(entry: Catalogue.Model, params: GenerationParams, references: [ReferenceInput]?, apiKey: String) throws -> URLRequest {
+        guard let url = URL(string: "\(apiBase)/\(entry.id):generateContent") else {
+            throw ProviderError.generationFailed("Invalid endpoint URL")
         }
-
-        // Ultra forces sampleCount = 1; we only ever request 1 anyway.
-        return [
-            "instances": [instance],
-            "parameters": [
-                "sampleCount": 1,
-                "aspectRatio": apiAspectRatio,
-            ] as [String: Any],
-        ]
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body(entry: entry, params: params, references: references))
+        return req
     }
 
-    func parseImagenResponseForTesting(_ data: Data) throws -> GeneratedImage {
-        try parseImagenResponse(data)
-    }
-
-    private func parseImagenResponse(_ data: Data) throws -> GeneratedImage {
-        guard
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let predictions = json["predictions"] as? [[String: Any]],
-            let first = predictions.first,
-            let b64 = first["bytesBase64Encoded"] as? String,
-            let imageData = Data(base64Encoded: b64)
-        else {
-            throw ProviderError.invalidResponse
-        }
-
-        let mimeType = (first["mimeType"] as? String) ?? "image/jpeg"
-        let format = mimeType.components(separatedBy: "/").last ?? "jpeg"
-        return GeneratedImage(data: imageData, format: format)
-    }
-
-    // MARK: - Gemini path (:generateContent)
-
-    private func generateGemini(params: GenerationParams, references: [ReferenceInput]?, apiKey: String, session: URLSession) async throws -> GeneratedImage {
-        let endpoint = "\(Self.apiBase)/\(params.model.id):generateContent"
-        let body = buildGeminiRequest(params: params, references: references)
-        let request = try buildURLRequest(endpoint: endpoint, apiKey: apiKey, body: body)
-        let data = try await send(request, using: session)
-        return try parseGeminiResponse(data)
-    }
-
-    private func buildGeminiRequest(params: GenerationParams, references: [ReferenceInput]?) -> [String: Any] {
+    /// Catalogue `body` first, then the fields the app owns on top: they cannot be overridden.
+    static func body(entry: Catalogue.Model, params: GenerationParams, references: [ReferenceInput]?) -> [String: Any] {
         var prompt = params.prompt
         if let neg = params.negativePrompt, !neg.isEmpty {
             prompt += "\n\nAvoid: \(neg)"
         }
 
         var parts: [[String: Any]] = [["text": prompt]]
-        if let refs = references, !refs.isEmpty {
-            for ref in refs.prefix(maxReferenceImages) {
-                parts.append([
-                    "inlineData": [
-                        "mimeType": "image/png",
-                        "data": ref.imageData.base64EncodedString(),
-                    ],
-                ])
-            }
+        for ref in (references ?? []).prefix(entry.maxReferenceImages) {
+            parts.append([
+                "inlineData": [
+                    "mimeType": "image/png",
+                    "data": ref.imageData.base64EncodedString(),
+                ],
+            ])
         }
 
-        var apiAspectRatio = params.aspectRatio.rawValue
-        if params.aspectRatio == .custom {
-            let ratio = Double(params.width) / Double(params.height)
-            apiAspectRatio = ratio > 1.2 ? "16:9" : ratio < 0.8 ? "9:16" : "1:1"
-        }
+        var imageConfig: [String: Any] = [
+            "aspectRatio": params.aspectRatio.apiRatio(width: params.width, height: params.height),
+        ]
+        if let size = params.model.imageSize { imageConfig["imageSize"] = size }
 
-        return [
-            "contents": [[
-                "role": "user",
-                "parts": parts,
-            ]],
+        let appOwned: [String: Any] = [
+            "contents": [["role": "user", "parts": parts]],
             "generationConfig": [
                 "responseModalities": ["IMAGE"],
-                "imageConfig": ["aspectRatio": apiAspectRatio],
+                "imageConfig": imageConfig,
             ] as [String: Any],
         ]
+        let defaults = entry.body.mapValues(\.anyValue)
+        return JSONValue.merged(defaults, with: appOwned)
     }
 
-    func parseGeminiResponseForTesting(_ data: Data) throws -> GeneratedImage {
-        try parseGeminiResponse(data)
-    }
+    // MARK: - Response
 
-    private func parseGeminiResponse(_ data: Data) throws -> GeneratedImage {
+    static func parseResponse(_ data: Data, usdToGBP: Decimal) throws -> GeneratedImage {
         guard
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let candidates = json["candidates"] as? [[String: Any]],
@@ -197,7 +164,7 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.invalidResponse
         }
 
-        for part in parts {
+        for part in parts where (part["thought"] as? Bool) != true {
             if let inline = part["inlineData"] as? [String: Any] ?? part["inline_data"] as? [String: Any],
                let b64 = inline["data"] as? String,
                let imageData = Data(base64Encoded: b64) {
@@ -205,28 +172,39 @@ public struct NanaBananaProvider: ImageProvider {
                     ?? (inline["mime_type"] as? String)
                     ?? "image/png"
                 let format = mimeType.components(separatedBy: "/").last ?? "png"
-                return GeneratedImage(data: imageData, format: format)
+                return GeneratedImage(
+                    data: imageData,
+                    format: format,
+                    actualCost: cost(in: json, usdToGBP: usdToGBP),
+                    seed: seed(in: json, candidate: first),
+                    rawResponse: [:]
+                )
             }
         }
 
         throw ProviderError.invalidResponse
     }
 
-    // MARK: - Shared HTTP
-
-    private func buildURLRequest(endpoint: String, apiKey: String, body: [String: Any]) throws -> URLRequest {
-        guard let url = URL(string: endpoint) else {
-            throw ProviderError.generationFailed("Invalid endpoint URL")
+    /// A seed, if the response carries one (top level or on the candidate).
+    private static func seed(in json: [String: Any], candidate: [String: Any]) -> String? {
+        for source in [json, candidate] {
+            if let n = source["seed"] as? NSNumber { return n.stringValue }
+            if let s = source["seed"] as? String, !s.isEmpty { return s }
         }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return req
+        return nil
     }
 
-    private func send(_ request: URLRequest, using session: URLSession) async throws -> Data {
+    /// A cost, if the response carries one (`usage.cost` or `cost`, in USD), converted to GBP.
+    /// Google's direct API sends none today; this is here so a change is picked up, not guessed at.
+    private static func cost(in json: [String: Any], usdToGBP: Decimal) -> Decimal? {
+        let raw = ((json["usage"] as? [String: Any])?["cost"] as? NSNumber) ?? (json["cost"] as? NSNumber)
+        guard let raw, raw.doubleValue > 0 else { return nil }
+        return Catalogue.decimal(raw.doubleValue) * usdToGBP
+    }
+
+    // MARK: - HTTP
+
+    private func send(_ request: URLRequest, modelID: String, using session: URLSession) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -234,13 +212,26 @@ public struct NanaBananaProvider: ImageProvider {
         switch http.statusCode {
         case 200:
             return data
-        case 400, 401, 403:
+        case 401, 403:
             throw ProviderError.invalidAPIKey
+        case 404:
+            throw ProviderError.modelUnavailable(modelID)
         case 429:
             throw ProviderError.rateLimited
+        case 400:
+            // Google also answers 400 for a malformed key; its own message says which.
+            throw ProviderError.badRequest(Self.providerMessage(data) ?? "HTTP 400")
         default:
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-            throw ProviderError.generationFailed(message)
+            throw ProviderError.generationFailed(Self.providerMessage(data) ?? "HTTP \(http.statusCode)")
         }
+    }
+
+    private static func providerMessage(_ data: Data) -> String? {
+        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let message = (json["error"] as? [String: Any])?["message"] as? String, !message.isEmpty {
+            return message
+        }
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text?.isEmpty ?? true) ? nil : text
     }
 }

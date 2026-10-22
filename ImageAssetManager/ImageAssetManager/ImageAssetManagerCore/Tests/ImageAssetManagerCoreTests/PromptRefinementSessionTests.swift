@@ -8,15 +8,14 @@ struct MockAnthropicClient: AnthropicClientProtocol {
     let response: String
     var shouldThrow: Bool = false
 
+    var model: String = "mock-model"
+
     func complete(
         system: String,
-        messages: [[String: String]],
-        model: String,
-        maxTokens: Int,
-        temperature: Double
-    ) async throws -> String {
+        messages: [[String: String]]
+    ) async throws -> AnthropicCompletion {
         if shouldThrow { throw AnthropicError.missingAPIKey }
-        return response
+        return AnthropicCompletion(text: response, model: model)
     }
 }
 
@@ -49,6 +48,18 @@ struct PromptRefinementSessionTests {
         #expect(session.isComplete == true)
         #expect(session.error == nil)
         #expect(session.conversation.count == 2)
+    }
+
+    @Test("modelUsed records the response's model, not a compiled default")
+    @MainActor func testModelUsedFromResponse() async {
+        var client = MockAnthropicClient(response: #"{"refined_prompt": "x", "rationale": "y"}"#)
+        client.model = "claude-fallback-served"
+        let session = PromptRefinementSession(draft: "d", context: makeContext(), client: client)
+        #expect(session.modelUsed == nil)
+
+        await session.refine()
+
+        #expect(session.modelUsed == "claude-fallback-served")
     }
 
     @Test("Refine mode: falls back to raw text when JSON is absent")
@@ -117,9 +128,9 @@ struct PromptRefinementSessionTests {
         final class Capture: @unchecked Sendable { var system: String = "" }
         struct CapturingClient: AnthropicClientProtocol {
             let capture: Capture
-            func complete(system: String, messages: [[String: String]], model: String, maxTokens: Int, temperature: Double) async throws -> String {
+            func complete(system: String, messages: [[String: String]]) async throws -> AnthropicCompletion {
                 capture.system = system
-                return #"{"refined_prompt": "x", "rationale": "y"}"#
+                return AnthropicCompletion(text: #"{"refined_prompt": "x", "rationale": "y"}"#, model: "mock-model")
             }
         }
         let capture = Capture()

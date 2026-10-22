@@ -78,12 +78,12 @@ public enum GenerationPolicy {
         public let truncated: Bool
     }
 
-    /// Merge project-derived refs with explicit refs, cap at the provider's
-    /// reference limit (default 3). Project refs win precedence when over-cap.
+    /// Merge project-derived refs with explicit refs, cap at the resolved model's
+    /// `maxReferenceImages` (from the catalogue). Project refs win precedence when over-cap.
     public static func mergeReferences(
         project: [GenerationReference],
         explicit: [GenerationReference],
-        maxReferences: Int = 3
+        maxReferences: Int
     ) -> MergedReferences {
         let combined = project + explicit
         if combined.count > maxReferences {
@@ -92,48 +92,11 @@ public enum GenerationPolicy {
         return MergedReferences(references: combined, truncated: false)
     }
 
-    // MARK: - Quality → model routing
+    // MARK: - Quality names
 
+    /// The quality names callers use. Which model each means is `ModelResolver`'s
+    /// decision, from the catalogue; nothing here names a model.
     public enum Quality: String, Sendable {
         case fast, standard, pro, withReferences = "with_references", auto
-    }
-
-    public enum QualityError: Error, Equatable, Sendable {
-        case unknown(String)
-    }
-
-    public struct ModelRoute: Sendable, Equatable {
-        public let modelID: String
-        public let autoRouted: Bool
-    }
-
-    /// Resolve the target model ID from a requested quality tier and whether
-    /// references are attached. When references are attached but the requested
-    /// tier can't use them, silently reroute to the reference-capable model
-    /// and mark the route as `autoRouted` so the caller can surface a note.
-    public static func chooseModel(
-        quality: String,
-        hasReferences: Bool
-    ) throws -> ModelRoute {
-        guard let q = Quality(rawValue: quality.lowercased()) else {
-            throw QualityError.unknown(quality)
-        }
-
-        let target: String
-        switch q {
-        case .fast:           target = NanaBananaProvider.ModelID.imagenFast
-        case .standard:       target = NanaBananaProvider.ModelID.imagenStandard
-        case .pro:            target = NanaBananaProvider.ModelID.imagenUltra
-        case .withReferences: target = NanaBananaProvider.ModelID.geminiWithRefs
-        case .auto:
-            target = hasReferences
-                ? NanaBananaProvider.ModelID.geminiWithRefs
-                : NanaBananaProvider.ModelID.imagenStandard
-        }
-
-        if hasReferences && !NanaBananaProvider.supportsReferences(modelID: target) {
-            return ModelRoute(modelID: NanaBananaProvider.ModelID.geminiWithRefs, autoRouted: true)
-        }
-        return ModelRoute(modelID: target, autoRouted: false)
     }
 }
