@@ -334,6 +334,16 @@ extension AppDatabase {
     public func insertSpendLog(_ log: SpendLog) async throws {
         try await write { db in try log.insert(db) }
     }
+
+    /// A charge for an image the library refused to store. Counted in every spend total.
+    public func insertRefusedSpend(providerID: String, modelID: String?, estimatedCost: Double?, actualCost: Double?, reason: String, timestamp: String) async throws {
+        try await write { db in
+            try db.execute(
+                sql: "INSERT INTO refused_spend (id, provider_id, model_id, estimated_cost, actual_cost, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                arguments: [UUID().uuidString, providerID, modelID, estimatedCost, actualCost, reason, timestamp]
+            )
+        }
+    }
 }
 
 // MARK: - Prompts

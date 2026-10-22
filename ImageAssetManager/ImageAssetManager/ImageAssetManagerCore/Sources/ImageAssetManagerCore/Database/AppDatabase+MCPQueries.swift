@@ -277,7 +277,7 @@ extension AppDatabase {
             SELECT COALESCE(SUM(estimated_cost), 0) AS total_estimated,
                    COALESCE(SUM(actual_cost), 0)    AS total_actual,
                    COUNT(*)                          AS generation_count
-            FROM spend_log sl \(where_)
+            FROM spend_entries sl \(where_)
             """
 
         return try await read { db in

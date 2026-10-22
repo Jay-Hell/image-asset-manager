@@ -93,7 +93,8 @@ final class GenerationViewModel {
         let s = try currentSelection()
         return try ModelResolver.resolveSelection(
             provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
-            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers,
+            live: OpenRouterModelStore.shared.snapshot()
         )
     }
 
@@ -103,7 +104,8 @@ final class GenerationViewModel {
         let s = try currentSelection()
         return try PreparedGeneration.prepare(
             provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
-            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers,
+            live: OpenRouterModelStore.shared.snapshot()
         )
     }
 

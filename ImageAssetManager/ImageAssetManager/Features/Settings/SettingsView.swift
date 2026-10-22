@@ -26,8 +26,12 @@ struct SettingsView: View {
                 account: NanaBananaProvider.keychainAccount,
                 helperText: "Get your key at aistudio.google.com. Works for every Gemini image model in the model catalogue (Fast, Standard, Pro). Stored in macOS Keychain only — never uploaded to iCloud.",
                 footerText: "Required for image generation.",
-                removalMessage: "The Nano Banana API key will be removed from Keychain."
+                removalMessage: "The Nano Banana API key will be removed from Keychain.",
+                onKeyChanged: { Task { await ProviderKeyChange.refresh() } }
             )
+
+            // MARK: OpenRouter API Key
+            OpenRouterSettingsSection()
 
             // MARK: Anthropic API Key (prompt refinement)
             KeychainKeyEditor(

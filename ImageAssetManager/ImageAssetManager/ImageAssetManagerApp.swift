@@ -39,6 +39,8 @@ struct ImageAssetManagerApp: App {
                     .environment(env)
                     // Check the model catalogue now and every 24 hours while the app runs.
                     .task { CatalogueStore.shared.start() }
+                    // OpenRouter's public model list: at launch and every 24 hours.
+                    .task { OpenRouterModelStore.shared.start() }
                     #if os(macOS)
                     .task { await startMCPServer(env) }
                     #endif

@@ -24,11 +24,15 @@ public actor GenerationService {
     private let database: AppDatabase
     private let libraryURL: URL
     private let provider: any ImageProvider
+    private let router: RouteExecutor?
 
-    public init(database: AppDatabase, libraryURL: URL, provider: any ImageProvider) {
+    /// `router` serves requests that carry `routes` (the resolver's list, first route first);
+    /// without it, or without routes, the one `provider` is called as before.
+    public init(database: AppDatabase, libraryURL: URL, provider: any ImageProvider, router: RouteExecutor? = nil) {
         self.database = database
         self.libraryURL = libraryURL
         self.provider = provider
+        self.router = router
     }
 
     public struct Request: @unchecked Sendable {
@@ -47,6 +51,8 @@ public actor GenerationService {
         public let variantFamilyName: String?
         /// What the caller gated this call against; the provider re-checks it if it must change model.
         public let budget: GenerationPolicy.BudgetContext?
+        /// The resolver's routes for this request, first route first. Empty: use the service's provider.
+        public let routes: [Resolution]
 
         public var primaryProjectID: String? { projectIDs.first }
 
@@ -61,8 +67,10 @@ public actor GenerationService {
             projectIDs: [String] = [],
             tags: [String] = [],
             variantFamilyName: String? = nil,
-            budget: GenerationPolicy.BudgetContext? = nil
+            budget: GenerationPolicy.BudgetContext? = nil,
+            routes: [Resolution] = []
         ) {
+            self.routes = routes
             self.budget = budget
             self.prompt = prompt
             self.negativePrompt = negativePrompt
@@ -86,6 +94,8 @@ public actor GenerationService {
         public let estimatedCost: Double
         public let actualCost: Double?
         public let seed: String?
+        /// Why earlier routes were left, in order. Empty when the first route served.
+        public let fallbackNotes: [String]
     }
 
     /// Generate one image, save it as a library asset, and return the outcome.
@@ -103,15 +113,16 @@ public actor GenerationService {
         )
 
         let refInputs = request.references.map(\.input)
-        let result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
-
-        let assetID = UUID().uuidString
-        let filename = "\(assetID).\(result.format)"
-        let assetsDir = libraryURL.appending(path: "assets")
-        let fileURL = assetsDir.appending(path: filename)
-
-        try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
-        try result.data.write(to: fileURL)
+        let result: GeneratedImage
+        var fallbackNotes: [String] = []
+        if let router, !request.routes.isEmpty {
+            let routed = try await router.generate(routes: request.routes, base: params, references: refInputs.isEmpty ? nil : refInputs)
+            result = routed.image
+            fallbackNotes = routed.fallbackNotes
+        } else {
+            result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
+        }
+        let servedBy = result.providerUsed ?? provider.providerID
 
         let now = ISO8601DateFormatter().string(from: Date())
         // A provider that changed model mid-call (a 404 retry) says which, and what it costs.
@@ -119,21 +130,46 @@ public actor GenerationService {
         let estimatedCost = Double(truncating: (result.estimatedCostGBP ?? provider.estimateCost(params)) as NSDecimalNumber)
         let actualCost = result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) }
 
+        let assetID = UUID().uuidString
+        let assetsDir = libraryURL.appending(path: "assets")
+        // The one place bytes become a file (pass C): stored as delivered and named for what
+        // they are, so an `image/svg+xml` answer is an SVG asset (T15). A label the bytes
+        // contradict is refused, not trusted. The provider has already charged by now, so a
+        // refusal still records the spend and says so.
+        let stored: StoredAssetFile
+        do {
+            stored = try AssetStore.store(
+                result.data, mimeType: result.mimeType ?? "image/\(result.format)", assetID: assetID, libraryURL: libraryURL
+            )
+        } catch let refusal as AssetStoreError {
+            try await database.insertRefusedSpend(
+                providerID: servedBy, modelID: modelID, estimatedCost: estimatedCost, actualCost: actualCost,
+                reason: refusal.localizedDescription, timestamp: now
+            )
+            throw GenerationServiceError.outputRefused(
+                reason: refusal.localizedDescription, providerID: servedBy, modelID: modelID,
+                estimatedCost: estimatedCost, actualCost: actualCost
+            )
+        }
+        let filename = stored.filename
+        let fileURL = stored.fileURL
+
         let asset = Asset(
             id: assetID,
             filename: filename,
-            fileHash: result.data.sha256,
+            fileHash: stored.fileHash,
             projectID: request.primaryProjectID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             modelID: modelID,
             prompt: request.prompt,
             negativePrompt: request.negativePrompt,
-            width: request.width,
-            height: request.height,
+            width: stored.width ?? request.width,
+            height: stored.height ?? request.height,
             aspectRatio: request.aspectRatio.rawValue,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
-            createdAt: now
+            createdAt: now,
+            mediaType: stored.mediaType.rawValue
         )
         try await database.insertAsset(asset)
 
@@ -143,7 +179,7 @@ public actor GenerationService {
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
             timestamp: now
@@ -181,10 +217,24 @@ public actor GenerationService {
             filename: filename,
             fileURL: fileURL,
             modelID: modelID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
-            seed: result.seed
+            seed: result.seed,
+            fallbackNotes: fallbackNotes
         )
+    }
+}
+
+public enum GenerationServiceError: Error, LocalizedError {
+    /// The provider delivered, and charged for, an image the library would not store.
+    case outputRefused(reason: String, providerID: String, modelID: String, estimatedCost: Double, actualCost: Double?)
+
+    public var errorDescription: String? {
+        switch self {
+        case .outputRefused(let reason, let provider, let model, let estimated, let actual):
+            let cost = actual ?? estimated
+            return "\(provider) charged about £\(String(format: "%.4f", cost)) for \(model), but the image was refused and not saved (\(reason)). The charge is recorded in Spend."
+        }
     }
 }

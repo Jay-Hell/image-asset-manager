@@ -84,10 +84,19 @@ extension MCPServer {
         // --- 6. Route (quality → provider, model, parameters) -----------
         // The resolver picks the model from the catalogue; this handler never does. The
         // reference cap is the resolved model's, so references are merged afterwards.
-        let provider = NanaBananaProvider()
-        let resolution: Resolution
+        // A provider with no key is simply unavailable; with neither key, Google stays so the
+        // caller is told its key is missing.
+        let google = NanaBananaProvider()
+        let openRouter = OpenRouterProvider()
+        var configured: [any ImageProvider] = []
+        if (try? KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)) != nil {
+            configured.append(google)
+        }
+        if OpenRouterProvider.hasKey() { configured.append(openRouter) }
+        if configured.isEmpty { configured.append(google) }
+        let routes: [Resolution]
         do {
-            resolution = try ModelResolver.resolve(
+            routes = try ModelResolver.resolveAll(
                 ResolveRequest(
                     media: "image",
                     quality: qualityRaw,
@@ -95,11 +104,14 @@ extension MCPServer {
                     aspectRatio: aspect.apiRatio(width: width, height: height)
                 ),
                 catalogue: CatalogueStore.shared.snapshot(),
-                providers: [provider.providerID]
+                providers: Set(configured.map(\.providerID)),
+                live: OpenRouterModelStore.shared.snapshot()
             )
         } catch let error as ResolveError {
             throw MCPGenerateError.invalidParam(error.localizedDescription)
         }
+        let resolution = routes[0]
+        let provider: any ImageProvider = configured.first { $0.providerID == resolution.provider } ?? google
         if let note = resolution.note { notes.append(note) }
         let merged = GenerationPolicy.mergeReferences(
             project: candidates.project,
@@ -141,10 +153,13 @@ extension MCPServer {
         let service = GenerationService(
             database: database,
             libraryURL: libraryURL,
-            provider: provider
+            provider: provider,
+            router: RouteExecutor(providers: configured, liveModels: OpenRouterModelStore.shared)
         )
 
         var outcomes: [[String: Any]] = []
+        var servedCost = 0.0
+        var servedModels: [String] = []
         for _ in 0..<count {
             let request = GenerationService.Request(
                 prompt: basePrompt,
@@ -157,9 +172,14 @@ extension MCPServer {
                 projectIDs: resolvedProjects.map(\.id),
                 tags: tags,
                 variantFamilyName: variantFamily,
-                budget: GenerationPolicy.BudgetContext(count: count, limits: budget)
+                budget: GenerationPolicy.BudgetContext(count: count, limits: budget),
+                routes: routes
             )
             let outcome = try await service.generate(request)
+            // What was actually served, not what the first route would have cost.
+            servedCost += outcome.estimatedCost
+            if !servedModels.contains(outcome.modelID) { servedModels.append(outcome.modelID) }
+            for note in outcome.fallbackNotes where !notes.contains(note) { notes.append(note) }
             outcomes.append([
                 "asset_id": outcome.assetID,
                 "file_path": outcome.fileURL.path(percentEncoded: false),
@@ -172,12 +192,12 @@ extension MCPServer {
 
         return [
             "generated": outcomes,
-            "total_cost_gbp": doubleValue(subtotal),
+            "total_cost_gbp": servedCost,
             "cost_breakdown": [
-                "model": effectiveModel.id,
+                "model": servedModels.joined(separator: ", "),
                 "count": count,
-                "unit_cost_gbp": doubleValue(unitCost),
-                "subtotal_gbp": doubleValue(subtotal),
+                "unit_cost_gbp": servedCost / Double(count),
+                "subtotal_gbp": servedCost,
             ] as [String: Any],
             "notes": notes,
         ] as [String: Any]
