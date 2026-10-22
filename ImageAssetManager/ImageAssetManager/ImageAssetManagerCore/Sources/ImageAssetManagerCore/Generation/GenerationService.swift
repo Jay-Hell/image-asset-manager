@@ -45,6 +45,8 @@ public actor GenerationService {
         public let projectIDs: [String]
         public let tags: [String]
         public let variantFamilyName: String?
+        /// What the caller gated this call against; the provider re-checks it if it must change model.
+        public let budget: GenerationPolicy.BudgetContext?
 
         public var primaryProjectID: String? { projectIDs.first }
 
@@ -58,8 +60,10 @@ public actor GenerationService {
             references: [GenerationReference] = [],
             projectIDs: [String] = [],
             tags: [String] = [],
-            variantFamilyName: String? = nil
+            variantFamilyName: String? = nil,
+            budget: GenerationPolicy.BudgetContext? = nil
         ) {
+            self.budget = budget
             self.prompt = prompt
             self.negativePrompt = negativePrompt
             self.model = model
@@ -94,7 +98,8 @@ public actor GenerationService {
             model: request.model,
             aspectRatio: request.aspectRatio,
             width: request.width,
-            height: request.height
+            height: request.height,
+            budget: request.budget
         )
 
         let refInputs = request.references.map(\.input)
@@ -109,7 +114,9 @@ public actor GenerationService {
         try result.data.write(to: fileURL)
 
         let now = ISO8601DateFormatter().string(from: Date())
-        let estimatedCost = Double(truncating: provider.estimateCost(params) as NSDecimalNumber)
+        // A provider that changed model mid-call (a 404 retry) says which, and what it costs.
+        let modelID = result.modelUsed ?? request.model.id
+        let estimatedCost = Double(truncating: (result.estimatedCostGBP ?? provider.estimateCost(params)) as NSDecimalNumber)
         let actualCost = result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) }
 
         let asset = Asset(
@@ -118,7 +125,7 @@ public actor GenerationService {
             fileHash: result.data.sha256,
             projectID: request.primaryProjectID,
             providerID: provider.providerID,
-            modelID: request.model.id,
+            modelID: modelID,
             prompt: request.prompt,
             negativePrompt: request.negativePrompt,
             width: request.width,
@@ -173,7 +180,7 @@ public actor GenerationService {
             assetID: assetID,
             filename: filename,
             fileURL: fileURL,
-            modelID: request.model.id,
+            modelID: modelID,
             providerID: provider.providerID,
             estimatedCost: estimatedCost,
             actualCost: actualCost,

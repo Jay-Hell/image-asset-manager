@@ -20,6 +20,8 @@ public final class PromptRefinementSession {
     public var error: String?
     public var isComplete: Bool = false
     public var context: RefinementContext
+    /// The model that actually served the last call (the response's `model`), for `PendingRefinement.modelUsed`.
+    public var modelUsed: String?
 
     private let client: any AnthropicClientProtocol
 
@@ -47,10 +49,9 @@ public final class PromptRefinementSession {
         conversation.append(RefinementConversationTurn(role: "user", content: userContent))
 
         do {
-            let response = try await client.complete(
-                system: system, messages: messages,
-                model: AnthropicClient.defaultModel, maxTokens: 1024, temperature: 0.7
-            )
+            let completion = try await client.complete(system: system, messages: messages)
+            modelUsed = completion.model
+            let response = completion.text
             conversation.append(RefinementConversationTurn(role: "assistant", content: response))
             parseRefineResponse(response)
             isComplete = true
@@ -76,10 +77,9 @@ public final class PromptRefinementSession {
         conversation.append(RefinementConversationTurn(role: "user", content: userContent))
 
         do {
-            let response = try await client.complete(
-                system: system, messages: messages,
-                model: AnthropicClient.defaultModel, maxTokens: 1024, temperature: 0.7
-            )
+            let completion = try await client.complete(system: system, messages: messages)
+            modelUsed = completion.model
+            let response = completion.text
             conversation.append(RefinementConversationTurn(role: "assistant", content: response))
             checkForCompletion(response)
         } catch {
@@ -101,10 +101,9 @@ public final class PromptRefinementSession {
         let messages = capturedConversation.map { ["role": $0.role, "content": $0.content] }
 
         do {
-            let response = try await client.complete(
-                system: system, messages: messages,
-                model: AnthropicClient.defaultModel, maxTokens: 1024, temperature: 0.7
-            )
+            let completion = try await client.complete(system: system, messages: messages)
+            modelUsed = completion.model
+            let response = completion.text
             conversation.append(RefinementConversationTurn(role: "assistant", content: response))
             checkForCompletion(response)
         } catch {

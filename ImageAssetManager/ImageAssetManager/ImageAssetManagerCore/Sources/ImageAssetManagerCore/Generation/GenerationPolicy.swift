@@ -38,7 +38,20 @@ public enum GenerationPolicy {
         return subtotal
     }
 
+    /// What a call was gated against: how many images and the limits. Carried into the
+    /// provider so a mid-call model change is priced and checked again.
+    public struct BudgetContext: Sendable, Equatable {
+        public let count: Int
+        public let limits: BudgetLimits
+
+        public init(count: Int, limits: BudgetLimits) {
+            self.count = count
+            self.limits = limits
+        }
+    }
+
     // MARK: - Budget clamping (server-held ceiling)
+    // (BudgetViolation's user-facing text is in the extension at the foot of this file.)
 
     /// The app-held hard ceiling for MCP calls. Caller-supplied `max_images` /
     /// `max_cost_gbp` are clamped to this — the server owns the guardrail, not
@@ -78,12 +91,12 @@ public enum GenerationPolicy {
         public let truncated: Bool
     }
 
-    /// Merge project-derived refs with explicit refs, cap at the provider's
-    /// reference limit (default 3). Project refs win precedence when over-cap.
+    /// Merge project-derived refs with explicit refs, cap at the resolved model's
+    /// `maxReferenceImages` (from the catalogue). Project refs win precedence when over-cap.
     public static func mergeReferences(
         project: [GenerationReference],
         explicit: [GenerationReference],
-        maxReferences: Int = 3
+        maxReferences: Int
     ) -> MergedReferences {
         let combined = project + explicit
         if combined.count > maxReferences {
@@ -92,48 +105,22 @@ public enum GenerationPolicy {
         return MergedReferences(references: combined, truncated: false)
     }
 
-    // MARK: - Quality → model routing
+    // MARK: - Quality names
 
+    /// The quality names callers use. Which model each means is `ModelResolver`'s
+    /// decision, from the catalogue; nothing here names a model.
     public enum Quality: String, Sendable {
         case fast, standard, pro, withReferences = "with_references", auto
     }
+}
 
-    public enum QualityError: Error, Equatable, Sendable {
-        case unknown(String)
-    }
-
-    public struct ModelRoute: Sendable, Equatable {
-        public let modelID: String
-        public let autoRouted: Bool
-    }
-
-    /// Resolve the target model ID from a requested quality tier and whether
-    /// references are attached. When references are attached but the requested
-    /// tier can't use them, silently reroute to the reference-capable model
-    /// and mark the route as `autoRouted` so the caller can surface a note.
-    public static func chooseModel(
-        quality: String,
-        hasReferences: Bool
-    ) throws -> ModelRoute {
-        guard let q = Quality(rawValue: quality.lowercased()) else {
-            throw QualityError.unknown(quality)
+extension GenerationPolicy.BudgetViolation: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .tooManyImages(let count, let max):
+            return "\(count) images is over the limit of \(max) per call."
+        case .tooCostly(let subtotal, let max):
+            return "This would cost about £\(subtotal.formatted(.number.precision(.fractionLength(2)))), over the £\(max.formatted(.number.precision(.fractionLength(2)))) limit per call. Pick a cheaper model or size."
         }
-
-        let target: String
-        switch q {
-        case .fast:           target = NanaBananaProvider.ModelID.imagenFast
-        case .standard:       target = NanaBananaProvider.ModelID.imagenStandard
-        case .pro:            target = NanaBananaProvider.ModelID.imagenUltra
-        case .withReferences: target = NanaBananaProvider.ModelID.geminiWithRefs
-        case .auto:
-            target = hasReferences
-                ? NanaBananaProvider.ModelID.geminiWithRefs
-                : NanaBananaProvider.ModelID.imagenStandard
-        }
-
-        if hasReferences && !NanaBananaProvider.supportsReferences(modelID: target) {
-            return ModelRoute(modelID: NanaBananaProvider.ModelID.geminiWithRefs, autoRouted: true)
-        }
-        return ModelRoute(modelID: target, autoRouted: false)
     }
 }

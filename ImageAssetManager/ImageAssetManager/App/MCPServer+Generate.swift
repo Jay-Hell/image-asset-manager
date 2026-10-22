@@ -79,26 +79,38 @@ extension MCPServer {
         if clamp.clampedCost {
             notes.append("max_cost_gbp clamped to \(format(budget.maxCostGBP)) (app setting)")
         }
-        let references = try await resolveReferences(
-            args: args,
-            project: project,
-            notes: &notes
-        )
+        let candidates = try await resolveReferences(args: args, project: project)
 
-        // --- 6. Effective model (quality → model ID) --------------------
+        // --- 6. Route (quality → provider, model, parameters) -----------
+        // The resolver picks the model from the catalogue; this handler never does. The
+        // reference cap is the resolved model's, so references are merged afterwards.
         let provider = NanaBananaProvider()
-        let route: GenerationPolicy.ModelRoute
+        let resolution: Resolution
         do {
-            route = try GenerationPolicy.chooseModel(quality: qualityRaw, hasReferences: !references.isEmpty)
-        } catch GenerationPolicy.QualityError.unknown(let q) {
-            throw MCPGenerateError.invalidParam("unknown quality '\(q)' (expected fast|standard|pro|with_references|auto)")
+            resolution = try ModelResolver.resolve(
+                ResolveRequest(
+                    media: "image",
+                    quality: qualityRaw,
+                    referenceCount: candidates.project.count + candidates.explicit.count,
+                    aspectRatio: aspect.apiRatio(width: width, height: height)
+                ),
+                catalogue: CatalogueStore.shared.snapshot(),
+                providers: [provider.providerID]
+            )
+        } catch let error as ResolveError {
+            throw MCPGenerateError.invalidParam(error.localizedDescription)
         }
-        if route.autoRouted {
-            notes.append("Auto-routed to with_references because references are attached; \(qualityRaw) can't use them on this API")
+        if let note = resolution.note { notes.append(note) }
+        let merged = GenerationPolicy.mergeReferences(
+            project: candidates.project,
+            explicit: candidates.explicit,
+            maxReferences: resolution.maxReferenceImages
+        )
+        if merged.truncated {
+            notes.append("Truncated to first \(resolution.maxReferenceImages) references (model limit)")
         }
-        guard let effectiveModel = provider.availableModels.first(where: { $0.id == route.modelID }) else {
-            throw MCPGenerateError.invalidParam("internal: model '\(route.modelID)' not found in provider catalogue")
-        }
+        let references = merged.references
+        let effectiveModel = resolution.imageModel
 
         // --- 7. Cost gate -----------------------------------------------
         let unitCost = effectiveModel.costPerImage
@@ -144,7 +156,8 @@ extension MCPServer {
                 references: references,
                 projectIDs: resolvedProjects.map(\.id),
                 tags: tags,
-                variantFamilyName: variantFamily
+                variantFamilyName: variantFamily,
+                budget: GenerationPolicy.BudgetContext(count: count, limits: budget)
             )
             let outcome = try await service.generate(request)
             outcomes.append([
@@ -187,11 +200,12 @@ extension MCPServer {
 
     // MARK: - Reference resolution
 
+    /// Gathers the candidate references. Merging and capping wait for the resolved
+    /// model, whose `maxReferenceImages` sets the cap.
     private func resolveReferences(
         args: [String: Any],
-        project: Project?,
-        notes: inout [String]
-    ) async throws -> [GenerationReference] {
+        project: Project?
+    ) async throws -> (project: [GenerationReference], explicit: [GenerationReference]) {
         var projectRefs: [GenerationReference] = []
         if let projectID = project?.id {
             let entries = try await database.fetchActiveReferenceEntries(projectID: projectID)
@@ -238,11 +252,7 @@ extension MCPServer {
             }
         }
 
-        let merged = GenerationPolicy.mergeReferences(project: projectRefs, explicit: explicitRefs)
-        if merged.truncated {
-            notes.append("Truncated to first 3 references (provider limit)")
-        }
-        return merged.references
+        return (project: projectRefs, explicit: explicitRefs)
     }
 
     // MARK: - Helpers

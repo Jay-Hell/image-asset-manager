@@ -5,7 +5,11 @@ struct SourcePanelView: View {
     @Bindable var viewModel: LibraryViewModel
 
     var body: some View {
-        List(selection: $viewModel.sourceSelection) {
+        // iOS only offers `List(selection:)` for an optional (or Set) binding.
+        List(selection: Binding<SourceSelection?>(
+            get: { viewModel.sourceSelection },
+            set: { if let newValue = $0 { viewModel.sourceSelection = newValue } }
+        )) {
             Section {
                 Label("All Assets", systemImage: "photo.stack")
                     .tag(SourceSelection.allAssets)

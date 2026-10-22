@@ -127,7 +127,7 @@ struct InspectorPanelView: View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader("Details")
             labeledRow("Provider", detail.asset.providerID)
-            labeledRow("Model", detail.asset.modelID)
+            labeledRow("Model", CatalogueStore.shared.displayName(forModelID: detail.asset.modelID))
             if let w = detail.asset.width, let h = detail.asset.height {
                 labeledRow("Dimensions", "\(w) × \(h)")
             }

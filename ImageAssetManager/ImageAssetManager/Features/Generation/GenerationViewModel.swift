@@ -39,6 +39,8 @@ final class GenerationViewModel {
     var isGenerating: Bool = false
     var generationError: String?
     var generatedImage: GeneratedImage?
+    /// The resolution and gate captured when `generate()` ran. Confirm records from it.
+    private(set) var preparedGeneration: PreparedGeneration?
 
     // MARK: - Post-Generation
     var pendingTags: [String] = []
@@ -78,30 +80,53 @@ final class GenerationViewModel {
 
     var currentModel: ImageModel? {
         guard let provider = currentProvider else { return nil }
-        return provider.availableModels.first { $0.id == selectedModelID }
+        // A stored ID for a retired model (old project default, old asset) reads as its replacement.
+        let wanted = selectedModelID.map { CatalogueStore.shared.liveModelID(for: $0) }
+        return provider.availableModels.first { $0.id == wanted }
             ?? provider.availableModels.first
     }
 
-    /// The model that will actually be used for the next generation.
-    /// Auto-routes to the reference-capable model when refs are attached and the
-    /// user-selected model can't handle them.
-    var effectiveModel: ImageModel? {
-        guard let provider = currentProvider, let selected = currentModel else { return nil }
-        if !confirmedReferenceIDs.isEmpty
-            && provider is NanaBananaProvider
-            && !NanaBananaProvider.supportsReferences(modelID: selected.id) {
-            return provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.geminiWithRefs } ?? selected
-        }
-        return selected
+    /// The route for the next generation, from the shared resolver (the same function the
+    /// MCP uses). The panel never picks a model itself: it hands the resolver the
+    /// selection and what is attached, and uses what comes back.
+    private func resolveCurrent() throws -> Resolution {
+        let s = try currentSelection()
+        return try ModelResolver.resolveSelection(
+            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+        )
     }
 
-    /// Non-nil when the generation will use a different model than the user selected
-    /// (e.g. auto-routing to "With References" because refs are attached).
-    var modelRouteNote: String? {
-        guard let selected = currentModel, let effective = effectiveModel, selected.id != effective.id else {
-            return nil
+    /// Resolve and budget-gate in one step (Core's `PreparedGeneration`, same default limits
+    /// as the MCP). `generate()` calls this once; the result is held until confirm or discard.
+    private func prepareCurrent() throws -> PreparedGeneration {
+        let s = try currentSelection()
+        return try PreparedGeneration.prepare(
+            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+        )
+    }
+
+    private func currentSelection() throws -> (provider: String, modelID: String, referenceCount: Int, aspectRatio: String, catalogue: Catalogue, providers: Set<String>) {
+        guard let provider = currentProvider, let selected = currentModel else {
+            throw ResolveError.unknownModel(selectedModelID ?? "")
         }
-        return "References attached — using \(effective.displayName)"
+        return (
+            provider.providerID, selected.id, confirmedReferenceIDs.count,
+            aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight),
+            CatalogueStore.shared.snapshot(), Set(availableProviders.map(\.providerID))
+        )
+    }
+
+    /// The model that will actually be used for the next generation. Reroutes to a
+    /// reference-capable model (with a note) when refs are attached and the selection
+    /// can't take them.
+    var effectiveModel: ImageModel? { try? resolveCurrent().imageModel }
+
+    /// Non-nil when the generation will use a different model than the user selected
+    /// (e.g. rerouting because refs are attached), or when no route is available.
+    var modelRouteNote: String? {
+        do { return try resolveCurrent().note } catch { return error.localizedDescription }
     }
 
     var estimatedCost: Decimal {
@@ -187,7 +212,8 @@ final class GenerationViewModel {
     private func loadProjectDependencies(projectID: String) async {
         if let project = projects.first(where: { $0.id == projectID }) {
             if let pid = project.defaultProviderID { selectedProviderID = pid }
-            if let mid = project.defaultModelID { selectedModelID = mid }
+            // A default that points at a retired model moves to its replacement.
+            if let mid = project.defaultModelID { selectedModelID = CatalogueStore.shared.liveModelID(for: mid) }
         }
 
         async let refsResult = (try? database.fetchActiveReferenceEntries(projectID: projectID)) ?? []
@@ -202,13 +228,19 @@ final class GenerationViewModel {
     // MARK: - Generation
 
     func generate() async {
-        guard canGenerate, let provider = currentProvider, let model = effectiveModel else { return }
+        guard canGenerate, let provider = currentProvider else { return }
 
         isGenerating = true
         generationError = nil
         generatedImage = nil
+        preparedGeneration = nil
 
         do {
+            // Resolve once and gate before any provider call. Confirm records from this
+            // resolution and never resolves again.
+            let prepared = try prepareCurrent()
+            let model = prepared.resolution.imageModel
+
             let refs: [ReferenceInput]?
             if !confirmedReferenceIDs.isEmpty && provider.supportsReferenceImages {
                 refs = await buildReferenceInputs()
@@ -222,10 +254,12 @@ final class GenerationViewModel {
                 model: model,
                 aspectRatio: aspectRatio,
                 width: resolvedWidth,
-                height: resolvedHeight
+                height: resolvedHeight,
+                budget: prepared.budget
             )
 
             generatedImage = try await provider.generate(params, references: refs)
+            preparedGeneration = prepared
         } catch {
             generationError = error.localizedDescription
         }
@@ -254,7 +288,9 @@ final class GenerationViewModel {
     // MARK: - Confirm / Discard
 
     func confirmGeneration() async throws {
-        guard let result = generatedImage else { return }
+        guard let result = generatedImage, let prepared = preparedGeneration else { return }
+        // What was generated, not what the panel would resolve now.
+        let recorded = prepared.recording(result)
 
         let assetID = UUID().uuidString
         let filename = "\(assetID).\(result.format)"
@@ -270,14 +306,14 @@ final class GenerationViewModel {
             filename: filename,
             fileHash: imageData.sha256,
             projectID: selectedProjectID,
-            providerID: currentProvider?.providerID ?? "",
-            modelID: effectiveModel?.id ?? "",
+            providerID: prepared.resolution.provider,
+            modelID: recorded.modelID,
             prompt: promptText,
             negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
             width: resolvedWidth,
             height: resolvedHeight,
             aspectRatio: aspectRatio.rawValue,
-            estimatedCost: Double(truncating: estimatedCost as NSDecimalNumber),
+            estimatedCost: Double(truncating: recorded.estimatedCostGBP as NSDecimalNumber),
             actualCost: result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) },
             createdAt: now
         )
@@ -290,7 +326,7 @@ final class GenerationViewModel {
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,
-            providerID: currentProvider?.providerID ?? "",
+            providerID: prepared.resolution.provider,
             estimatedCost: asset.estimatedCost,
             actualCost: asset.actualCost,
             timestamp: now
@@ -374,6 +410,7 @@ final class GenerationViewModel {
 
     private func resetPostGeneration() {
         generatedImage = nil
+        preparedGeneration = nil
         pendingTags = []
         tagInputText = ""
         selectedVariantFamilyName = ""

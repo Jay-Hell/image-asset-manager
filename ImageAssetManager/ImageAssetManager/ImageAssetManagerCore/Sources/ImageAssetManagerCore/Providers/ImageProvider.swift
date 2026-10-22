@@ -18,12 +18,27 @@ public struct ImageModel: Identifiable, Sendable {
     public let displayName: String
     public let supportedAspectRatios: [AspectRatio]
     public let costPerImage: Decimal
+    /// Per-model reference cap from the catalogue. 0 means the model takes none.
+    public let maxReferenceImages: Int
+    /// The `imageSize` the request should carry, when the model takes one.
+    public let imageSize: String?
 
-    public init(id: String, displayName: String, supportedAspectRatios: [AspectRatio], costPerImage: Decimal) {
+    public var supportsReferences: Bool { maxReferenceImages > 0 }
+
+    public init(
+        id: String,
+        displayName: String,
+        supportedAspectRatios: [AspectRatio],
+        costPerImage: Decimal,
+        maxReferenceImages: Int = 0,
+        imageSize: String? = nil
+    ) {
         self.id = id
         self.displayName = displayName
         self.supportedAspectRatios = supportedAspectRatios
         self.costPerImage = costPerImage
+        self.maxReferenceImages = maxReferenceImages
+        self.imageSize = imageSize
     }
 }
 
@@ -32,6 +47,14 @@ public enum AspectRatio: String, CaseIterable, Sendable {
     case landscape = "16:9"
     case portrait = "9:16"
     case custom
+
+    /// The ratio string the provider API takes. `custom` snaps to the nearest of
+    /// the three the app offers. One definition, used by the panel and the MCP.
+    public func apiRatio(width: Int, height: Int) -> String {
+        guard self == .custom else { return rawValue }
+        let ratio = Double(width) / Double(max(height, 1))
+        return ratio > 1.2 ? "16:9" : ratio < 0.8 ? "9:16" : "1:1"
+    }
 }
 
 public enum ReferenceRole: String, Sendable {
@@ -62,6 +85,9 @@ public struct GenerationParams: @unchecked Sendable {
     public let height: Int
     public let seed: String?
     public let additionalParams: [String: Any]
+    /// The budget this call was gated against. A provider that has to change the model
+    /// mid-call (a 404 retry) checks the new price against it before the second request.
+    public let budget: GenerationPolicy.BudgetContext?
 
     public init(
         prompt: String,
@@ -71,8 +97,10 @@ public struct GenerationParams: @unchecked Sendable {
         width: Int,
         height: Int,
         seed: String? = nil,
-        additionalParams: [String: Any] = [:]
+        additionalParams: [String: Any] = [:],
+        budget: GenerationPolicy.BudgetContext? = nil
     ) {
+        self.budget = budget
         self.prompt = prompt
         self.negativePrompt = negativePrompt
         self.model = model
@@ -90,8 +118,18 @@ public struct GeneratedImage: @unchecked Sendable {
     public let actualCost: Decimal?
     public let seed: String?
     public let rawResponse: [String: Any]
+    /// The model that actually served the request, when the provider changed it mid-call.
+    /// Nil means the model in the request.
+    public let modelUsed: String?
+    /// The GBP estimate for `modelUsed`, set with it.
+    public let estimatedCostGBP: Decimal?
 
-    public init(data: Data, format: String, actualCost: Decimal? = nil, seed: String? = nil, rawResponse: [String: Any] = [:]) {
+    public init(
+        data: Data, format: String, actualCost: Decimal? = nil, seed: String? = nil, rawResponse: [String: Any] = [:],
+        modelUsed: String? = nil, estimatedCostGBP: Decimal? = nil
+    ) {
+        self.modelUsed = modelUsed
+        self.estimatedCostGBP = estimatedCostGBP
         self.data = data
         self.format = format
         self.actualCost = actualCost

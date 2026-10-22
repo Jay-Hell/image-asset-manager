@@ -472,7 +472,8 @@ struct GenerationPanelView: View {
             mode: session.mode.rawValue.lowercased(),
             draftPrompt: session.draftPrompt,
             conversationJSON: session.conversationJSON(),
-            modelUsed: AnthropicClient.defaultModel,
+            // The model the response names (the fallback model when one served), not a compiled default.
+            modelUsed: session.modelUsed ?? CatalogueStore.shared.refinement()?.model ?? "unknown",
             finalPrompt: session.refinedPrompt
         )
         showRefinementPanel = false

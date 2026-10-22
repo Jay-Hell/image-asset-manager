@@ -37,16 +37,21 @@ image-asset-manager/
           Generation/                   ← GenerationService (actor), GenerationPolicy
                                           (budget/routing), PromptFlattener
           Library/                      ← LibraryMigrationService (actor), ImportNaming
+          Catalogue/                    ← Catalogue (schema + bounds), CatalogueStore
+                                          (sources, refresh), ModelResolver, JSONValue
+          Resources/models.json         ← bundled copy of catalogue/v1/models.json
           Providers/                    ← ImageProvider protocol, NanaBananaProvider
-                                          (4-model catalogue), ProviderRegistry,
+                                          (catalogue-driven), ProviderRegistry,
                                           ProviderError
-          Network/                      ← AnthropicClient (URLSession)
+          Network/                      ← AnthropicClient (URLSession, catalogue-driven)
           Refinement/                   ← PromptRefinementSession
           Models/                       ← Swift model types (GRDB-conformant)
           Export/                       ← IndexExporter (atomic JSON export)
           Security/                     ← KeychainService
         Tests/ImageAssetManagerCoreTests/
     ImageAssetManagerTests/             ← App-level tests
+  catalogue/v1/models.json              ← the model catalogue (served from the `catalogue` branch)
+  scripts/census.sh                     ← Core + app tests, iPad build, node --check; MIN_CORE=n MIN_APP=n
   mcp-server/                           ← Node.js MCP proxy (repo root, not in Xcode project)
     src/                                ← index.js, appClient.js, fallback.js, tools.js
 ```
@@ -143,14 +148,20 @@ Every provider implements `ImageProvider: Sendable`. Adding a provider requires 
 
 `GenerationParams.additionalParams` is `[String: Any]` (marked `@unchecked Sendable`) for provider-specific knobs. `ReferenceInput` carries base64 image data, role (`styleAnchor`/`subjectAnchor`), and optional weight.
 
-`NanaBananaProvider` exposes **four model tiers** across two Google endpoints (`:predict` for Imagen 4, `:generateContent` for Gemini), dispatched internally by model ID prefix. All IDs live in `NanaBananaProvider.ModelID` so the October 2026 Gemini deprecation bump touches one place:
+`NanaBananaProvider` (Google Gemini direct; provider ID `nano_banana` is stored on existing assets, so it stays) has **no model IDs in code**. Every model is an entry in the model catalogue, and every request goes to `:generateContent` with the model ID in the path. The Imagen `:predict` path is gone. The negative prompt is inlined as `"\n\nAvoid: {negative}"`.
 
-| `ModelID` constant | Endpoint | Refs |
-|---|---|---|
-| `imagenFast` / `imagenStandard` / `imagenUltra` | `:predict` | No (Imagen 4 on this API is text-only) |
-| `geminiWithRefs` | `:generateContent` | Yes (up to 3 via `inlineData` parts) |
+### Model catalogue
 
-Only `supportsReferences(modelID:)` returns true for `geminiWithRefs` — Imagen tiers are text-only, so the negative prompt is inlined as `"\n\nAvoid: {negative}"` rather than sent as a separate parameter.
+`catalogue/v1/models.json` (repo root) is the one source file: tier → ordered routes (`fast`/`standard`/`pro` for `image`; `openrouter` and `vector` entries are present but skipped until pass B/C), model entries (`aspectRatios`, `maxReferenceImages`, `imageSizes`, prices, a `body` merged *under* the app-owned request fields), `retired` models (display names for old assets, `replacedBy` for project defaults) and the prompt-`refinement` entry. A copy is bundled as `Core/Sources/.../Resources/models.json`; **a test fails if the two differ, so copy the repo file over the bundled one after every edit and raise `revision`.**
+
+- `Catalogue.parse` validates (`Catalogue/Catalogue.swift`): schemaVersion 1, size cap, model IDs `^[a-z0-9][a-z0-9.-]{1,63}$` (one `/` allowed except for `nano_banana`, whose IDs go in a URL path), prices in (0, $1.00], headers allow-listed to `anthropic-version`/`anthropic-beta` (beta values to `server-side-fallback-2026-07-01`), and `body` keys allow-listed per `api` (Gemini: `generationConfig.imageConfig.imageSize` and `generationConfig.responseModalities` only; refinement: `max_tokens` 1…8192, `output_config.effort` low/medium/high, `fallbacks: "default"`). A model entry with any other body key is skipped; a refinement entry with one, or with another beta value, refuses the whole file. Model IDs may carry no whitespace or control character (`\A…\z` anchors). A bad model entry is skipped and the rest load; a file that leaves an image tier with no usable route is refused whole.
+- `CatalogueStore` (`.shared`) picks the source: local override (macOS Settings → "Load catalogue from file…", shown with an OVERRIDE badge) > remote cache or bundled, whichever has the higher `revision`. The remote URL is compiled in and points at the `catalogue` branch. Refresh: launch, every 24 h, on demand, and one forced refresh per minute at most when a model answers 404. ETag-conditional; a failed fetch changes nothing. Cache: `Application Support/ImageAssetManagerCatalogue/`, never the library.
+- `ModelResolver.resolve` (pure, `Catalogue/ModelResolver.swift`) turns media + quality + required capabilities + optional explicit model + configured providers into a `Resolution` (provider, model, `imageSize`, reference cap, estimate, note). The MCP handler and the panel (`resolveSelection`) both call it; neither picks a model. The panel goes through `PreparedGeneration.prepare` (Core): resolve once, run `checkBudget` (20 images / £2.50, as the MCP) on the estimate before any provider call, and hold the result; confirm records from it (`recording(_:)`) and never re-resolves. `GenerationParams.budget` carries the gate to the provider: a 404 retry re-resolves from the request (new size, new price), re-checks the budget, and reports `GeneratedImage.modelUsed`/`estimatedCostGBP`, which `GenerationService` stores. An explicit model on two tiers takes the first in tier order (fast, standard, pro). `with_references` = `standard` + `references`; `auto` = `standard`.
+- Retiring a model is a file edit: set `retired` + `replacedBy`, raise `revision`, publish to the `catalogue` branch. Merging code never changes live models.
+
+### Prompt refinement
+
+`AnthropicClient` reads model, headers and body from the catalogue's `refinement` entry; the app owns `model`, `system`, `messages`. `anthropic-version` is compiled (`2026-10-21`). `temperature`/`top_p`/`top_k` are never sent. The reply is the first `text` block; `refusal` and `max_tokens` stop reasons have their own errors; `PendingRefinement.modelUsed` is the response's `model`.
 
 ### Generation Pipeline
 
@@ -159,8 +170,8 @@ Only `supportsReferences(modelID:)` returns true for `geminiWithRefs` — Imagen
 Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/IO dependencies):
 
 - `checkBudget(count:unitCost:limits:)` — throws `BudgetViolation` when either the image count or the projected cost exceeds the limits. Defaults: 20 images / £2.50.
-- `mergeReferences(project:explicit:maxReferences:)` — combines project active refs with explicit asset IDs, caps at 3 (provider max), project refs take precedence when over-cap.
-- `chooseModel(quality:hasReferences:)` — maps `"fast"`/`"standard"`/`"pro"`/`"with_references"`/`"auto"` + ref-presence to a concrete model ID, flagging `autoRouted: true` when the caller's pick can't use refs and we fall back to Gemini.
+- `mergeReferences(project:explicit:maxReferences:)` — combines project active refs with explicit asset IDs, caps at the resolved model's `maxReferenceImages` (from the catalogue), project refs take precedence when over-cap.
+- `Quality` — the caller-facing names (`fast`/`standard`/`pro`/`with_references`/`auto`). Which model each means is `ModelResolver`'s decision.
 
 `PromptFlattener` accepts either a plain string or `[String: Any]` and emits Subject-Context-Style-ordered prose. Canonical keys (`subject`, `context`, `action`, `setting`, `style`, `composition`, `lighting`, `mood`, `camera`, `palette`, `details`, `extra`) are emitted in order; arbitrary keys are flattened with title-cased labels; non-prompt keys (`seed`, `steps`, `sampler`, `cfg_scale`, etc.) are dropped. Research found neither Imagen 4 nor Gemini 2.5 Flash Image has a native JSON input — both want prose in a single string.
 
@@ -176,7 +187,7 @@ The Swift server exposes **10 tools**. Tool names live in both `App/MCPServer.sw
 
 `upload_asset` sends one asset's bytes to a URL a receiving system has already minted (Deliverable Orchestration's `artefact_asset_upload_url`), so image bytes never enter the calling model's context — only a receipt returns. The app performs the PUT rather than the Node proxy for two reasons: the proxy runs as a child of Claude Code and is refused at `open()` by macOS TCC on the iCloud container, and only the app knows the live library location (`LIBRARY_PATH` is an offline fallback and can be stale). Logic lives in `ImageAssetManagerCore/Network/AssetUploader.swift` — HTTPS only, no credentials in the URL, default port only, and an allowlist of `portal.ionicconsulting.co.uk` plus the `.r2.cloudflarestorage.com` suffix (leading dot deliberate — it forces a label boundary, so `notr2.cloudflarestorage.com` fails). The destination is validated **before** the file is read: the caller is a model that may have just read untrusted text, so an unguarded version of this tool is an exfiltration primitive. 10 MB cap mirrors the portal's `MAX_ASSET_BYTES`. Usage is not recorded — `mark_asset_used` stays a separate call.
 
-`generate_image` takes prompt (string or JSON), quality tier, optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; accepts `project` singular or `projects` array), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at 3), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
+`generate_image` takes prompt (string or JSON), quality tier, optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; accepts `project` singular or `projects` array), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at the resolved model's reference limit), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
 
 ### Platform Strategy
 
