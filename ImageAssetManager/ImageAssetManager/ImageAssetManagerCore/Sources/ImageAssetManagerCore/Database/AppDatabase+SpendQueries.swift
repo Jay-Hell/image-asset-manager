@@ -16,7 +16,8 @@ extension AppDatabase {
         return try await read { db in
             let row = try Row.fetchOne(db, sql: sql, arguments: args)
             let total = (row?["total_estimated"] as? Double) ?? 0
-            let count = (row?["generation_count"] as? Int) ?? 0
+            // INTEGER columns come back as Int64; a bare `as? Int` is always nil.
+            let count = (row?["generation_count"] as Int?) ?? 0
             return SpendSummary(
                 totalEstimated: total,
                 totalActual: (row?["total_actual"] as? Double) ?? 0,
@@ -75,7 +76,7 @@ extension AppDatabase {
                 return ProviderSpend(
                     providerID: pid,
                     totalEstimated: (row["total_estimated"] as? Double) ?? 0,
-                    generationCount: (row["generation_count"] as? Int) ?? 0
+                    generationCount: (row["generation_count"] as Int?) ?? 0
                 )
             }
         }
@@ -105,7 +106,7 @@ extension AppDatabase {
                     projectID: pid,
                     projectName: pname,
                     totalEstimated: (row["total_estimated"] as? Double) ?? 0,
-                    generationCount: (row["generation_count"] as? Int) ?? 0
+                    generationCount: (row["generation_count"] as Int?) ?? 0
                 )
             }
         }
