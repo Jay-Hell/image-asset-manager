@@ -192,6 +192,28 @@ struct NanaBananaProviderTests {
         #expect(try inlineCount(1) == 3)
     }
 
+    /// Each reference is labelled by what its bytes are; a vector reference is sent as SVG,
+    /// not passed off as PNG.
+    @Test func referencesCarryTheMIMETypeOfTheirBytes() throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D])
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10] + Array("JFIF".utf8))
+        let svg = Data(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"/>"#.utf8)
+        let refs = [png, jpeg, svg].enumerated().map { index, data in
+            ReferenceInput(assetID: "r\(index)", imageData: data, role: .subjectAnchor)
+        }
+        let rig = try ProviderRig(google: ok())
+        let params = try rig.params(quality: "standard")
+        let entry = try #require(rig.store.snapshot().model(provider: "nano_banana", id: params.model.id))
+        let built = try NanaBananaProvider.urlRequest(entry: entry, params: params, references: refs, apiKey: "k")
+
+        let sent = try #require(built.httpBody)
+        let body = try #require(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
+        let contents = try #require(body["contents"] as? [[String: Any]])
+        let parts = try #require(contents.first?["parts"] as? [[String: Any]])
+        let mimeTypes = parts.compactMap { ($0["inlineData"] as? [String: Any])?["mimeType"] as? String }
+        #expect(mimeTypes == ["image/png", "image/jpeg", "image/svg+xml"])
+    }
+
     // MARK: - Response: image, seed, cost
 
     @Test func theImageSeedAndCostAreParsedFromTheResponse() async throws {

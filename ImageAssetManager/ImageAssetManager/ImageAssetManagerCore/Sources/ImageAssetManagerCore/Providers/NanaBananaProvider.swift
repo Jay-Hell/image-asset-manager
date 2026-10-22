@@ -170,7 +170,8 @@ public struct NanaBananaProvider: ImageProvider {
         for ref in (references ?? []).prefix(entry.maxReferenceImages) {
             parts.append([
                 "inlineData": [
-                    "mimeType": "image/png",
+                    // Labelled by what the bytes are; PNG only for bytes no sniff recognises.
+                    "mimeType": MediaType(sniffing: ref.imageData)?.rawValue ?? "image/png",
                     "data": ref.imageData.base64EncodedString(),
                 ],
             ])
