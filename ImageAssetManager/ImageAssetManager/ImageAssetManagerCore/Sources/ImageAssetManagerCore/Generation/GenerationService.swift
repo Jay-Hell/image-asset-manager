@@ -53,6 +53,8 @@ public actor GenerationService {
         public let budget: GenerationPolicy.BudgetContext?
         /// The resolver's routes for this request, first route first. Empty: use the service's provider.
         public let routes: [Resolution]
+        /// An exact ratio such as `4:3`, when the three named aspect ratios cannot say it.
+        public let ratio: String?
 
         public var primaryProjectID: String? { projectIDs.first }
 
@@ -68,8 +70,10 @@ public actor GenerationService {
             tags: [String] = [],
             variantFamilyName: String? = nil,
             budget: GenerationPolicy.BudgetContext? = nil,
-            routes: [Resolution] = []
+            routes: [Resolution] = [],
+            ratio: String? = nil
         ) {
+            self.ratio = ratio
             self.routes = routes
             self.budget = budget
             self.prompt = prompt
@@ -94,14 +98,31 @@ public actor GenerationService {
         public let estimatedCost: Double
         public let actualCost: Double?
         public let seed: String?
+        /// The stored file's MIME type (`image/png`, `image/svg+xml`, …).
+        public let mediaType: String
         /// Why earlier routes were left, in order. Empty when the first route served.
         public let fallbackNotes: [String]
+    }
+
+    /// What a provider call returned, before anything is stored. The panel holds one while the
+    /// user decides whether to keep it; `record` stores it.
+    public struct Generated: Sendable {
+        public let image: GeneratedImage
+        /// Why earlier routes were left, in order. Empty when the first route served.
+        public let fallbackNotes: [String]
+        /// The provider that served it.
+        public let providerID: String
     }
 
     /// Generate one image, save it as a library asset, and return the outcome.
     /// `index.json` is re-exported once per call. For batch generation, loop
     /// and accept the repeated export cost (it's milliseconds per pass).
     public func generate(_ request: Request) async throws -> Outcome {
+        try await record(try await call(request), for: request)
+    }
+
+    /// The provider call alone, along the request's routes with fallback. Nothing is stored.
+    public func call(_ request: Request) async throws -> Generated {
         let params = GenerationParams(
             prompt: request.prompt,
             negativePrompt: request.negativePrompt,
@@ -109,7 +130,8 @@ public actor GenerationService {
             aspectRatio: request.aspectRatio,
             width: request.width,
             height: request.height,
-            budget: request.budget
+            budget: request.budget,
+            ratio: request.ratio
         )
 
         let refInputs = request.references.map(\.input)
@@ -122,7 +144,20 @@ public actor GenerationService {
         } else {
             result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
         }
-        let servedBy = result.providerUsed ?? provider.providerID
+        return Generated(image: result, fallbackNotes: fallbackNotes, providerID: result.providerUsed ?? provider.providerID)
+    }
+
+    /// Store a generated image and write its rows: asset, spend, tags, references, variant family,
+    /// `index.json`. The one place bytes become a library asset, for the MCP and the panel alike.
+    public func record(_ generated: Generated, for request: Request) async throws -> Outcome {
+        let params = GenerationParams(
+            prompt: request.prompt, negativePrompt: request.negativePrompt, model: request.model,
+            aspectRatio: request.aspectRatio, width: request.width, height: request.height,
+            budget: request.budget, ratio: request.ratio
+        )
+        let result = generated.image
+        let fallbackNotes = generated.fallbackNotes
+        let servedBy = generated.providerID
 
         let now = ISO8601DateFormatter().string(from: Date())
         // A provider that changed model mid-call (a 404 retry) says which, and what it costs.
@@ -165,7 +200,7 @@ public actor GenerationService {
             negativePrompt: request.negativePrompt,
             width: stored.width ?? request.width,
             height: stored.height ?? request.height,
-            aspectRatio: request.aspectRatio.rawValue,
+            aspectRatio: request.ratio ?? request.aspectRatio.rawValue,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
             createdAt: now,
@@ -221,6 +256,7 @@ public actor GenerationService {
             estimatedCost: estimatedCost,
             actualCost: actualCost,
             seed: result.seed,
+            mediaType: stored.mediaType.rawValue,
             fallbackNotes: fallbackNotes
         )
     }

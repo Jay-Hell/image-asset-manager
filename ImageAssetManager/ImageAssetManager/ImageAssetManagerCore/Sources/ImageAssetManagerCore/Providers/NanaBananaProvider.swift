@@ -105,7 +105,7 @@ public struct NanaBananaProvider: ImageProvider {
         do {
             resolution = try ModelResolver.resolveSelection(
                 provider: providerID, modelID: params.model.id, referenceCount: references?.count ?? 0,
-                aspectRatio: params.aspectRatio.apiRatio(width: params.width, height: params.height),
+                aspectRatio: params.apiRatio,
                 catalogue: snapshot, providers: [providerID]
             )
         } catch {
@@ -120,7 +120,8 @@ public struct NanaBananaProvider: ImageProvider {
         let next = GenerationParams(
             prompt: params.prompt, negativePrompt: params.negativePrompt, model: model,
             aspectRatio: params.aspectRatio, width: params.width, height: params.height,
-            seed: params.seed, additionalParams: params.additionalParams, budget: params.budget
+            seed: params.seed, additionalParams: params.additionalParams, budget: params.budget,
+            ratio: params.ratio
         )
         return (next, changed)
     }
@@ -178,7 +179,7 @@ public struct NanaBananaProvider: ImageProvider {
         }
 
         var imageConfig: [String: Any] = [
-            "aspectRatio": params.aspectRatio.apiRatio(width: params.width, height: params.height),
+            "aspectRatio": params.apiRatio,
         ]
         if let size = params.model.imageSize { imageConfig["imageSize"] = size }
 
@@ -269,11 +270,6 @@ public struct NanaBananaProvider: ImageProvider {
     }
 
     private static func providerMessage(_ data: Data) -> String? {
-        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let message = (json["error"] as? [String: Any])?["message"] as? String, !message.isEmpty {
-            return message
-        }
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text?.isEmpty ?? true) ? nil : text
+        ProviderMessage.text(from: data)
     }
 }

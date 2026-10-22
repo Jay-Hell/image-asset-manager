@@ -138,7 +138,7 @@ public struct OpenRouterProvider: ImageProvider {
 
         let ratios = record.values(of: "aspect_ratio")
         if !ratios.isEmpty {
-            let ratio = params.aspectRatio.apiRatio(width: params.width, height: params.height)
+            let ratio = params.apiRatio
             guard ratios.contains(ratio) else {
                 throw ResolveError.unsupportedAspectRatio(requested: ratio, supported: ratios)
             }
@@ -199,12 +199,7 @@ public struct OpenRouterProvider: ImageProvider {
     }
 
     private static func providerMessage(_ data: Data) -> String? {
-        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-            if let message = (json["error"] as? [String: Any])?["message"] as? String, !message.isEmpty { return message }
-            if let message = json["message"] as? String, !message.isEmpty { return message }
-        }
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text?.isEmpty ?? true) ? nil : String(text!.prefix(300))
+        ProviderMessage.text(from: data)
     }
 }
 

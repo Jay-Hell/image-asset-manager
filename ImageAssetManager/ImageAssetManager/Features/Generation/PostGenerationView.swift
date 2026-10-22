@@ -91,9 +91,7 @@ struct PostGenerationView: View {
 
                 // Error
                 if let error = confirmError {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red)
+                    ErrorMessageText(message: error, size: 12)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                 }
