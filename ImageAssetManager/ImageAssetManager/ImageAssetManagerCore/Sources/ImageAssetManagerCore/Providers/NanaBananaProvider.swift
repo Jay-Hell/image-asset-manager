@@ -107,7 +107,9 @@ public struct NanaBananaProvider: ImageProvider {
 
     /// The request that leaves the process. Internal so tests assert on it directly.
     static func urlRequest(entry: Catalogue.Model, params: GenerationParams, references: [ReferenceInput]?, apiKey: String) throws -> URLRequest {
-        guard let url = URL(string: "\(apiBase)/\(entry.id):generateContent") else {
+        // The ID goes into a URL path: whatever built the entry, only a valid ID reaches it.
+        guard Catalogue.isValidModelID(entry.id, allowSlash: false),
+              let url = URL(string: "\(apiBase)/\(entry.id):generateContent") else {
             throw ProviderError.generationFailed("Invalid endpoint URL")
         }
         var req = URLRequest(url: url)

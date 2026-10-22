@@ -92,6 +92,9 @@ public actor AnthropicClient: AnthropicClientProtocol {
         system: String,
         messages: [[String: String]]
     ) throws -> URLRequest {
+        guard Catalogue.isValidModelID(refinement.model, allowSlash: false) else {
+            throw AnthropicError.refinementUnavailable
+        }
         var request = URLRequest(url: apiURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

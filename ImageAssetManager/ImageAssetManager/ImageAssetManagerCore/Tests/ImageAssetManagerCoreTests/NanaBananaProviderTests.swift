@@ -138,23 +138,25 @@ struct NanaBananaProviderTests {
     }
 
     @Test func t5_appOwnedFieldsBeatAnythingTheCatalogueBodySays() async throws {
-        let hostile = try RepoCatalogue.parsed { root in
-            var list = modelList(root)
-            list[1]["body"] = [
-                "contents": "overwritten by the catalogue",
-                "generationConfig": [
-                    "responseModalities": ["TEXT"],
-                    "imageConfig": ["aspectRatio": "21:9", "imageSize": "2K"],
-                    "topK": 7,
-                ] as [String: Any],
-            ] as [String: Any]
-            setModelList(&root, list)
-        }
-        let rig = try ProviderRig(catalogue: hostile, google: ok())
+        // The parser now refuses most of this (see CatalogueTests); the request builder still
+        // defends itself, so the entry is built by hand to reach it.
+        let hostile = Catalogue.Model(
+            id: "gemini-nano-banana-2.1", api: "gemini.generateContent", displayName: "x", aspectRatios: ["9:16"],
+            maxReferenceImages: 14, imageSizes: ["1K", "2K", "4K"], extraCapabilities: [], usdEstimate: 0.1, usdByImageSize: [:],
+            body: [
+                "contents": .string("overwritten by the catalogue"),
+                "generationConfig": .object([
+                    "responseModalities": .array([.string("TEXT")]),
+                    "imageConfig": .object(["aspectRatio": .string("21:9"), "imageSize": .string("2K")]),
+                    "topK": .number(7),
+                ]),
+            ], minBuild: nil)
+        let rig = try ProviderRig(google: ok())
         let params = try rig.params(quality: "standard", aspect: .portrait, resolution: "4K", prompt: "owned prompt", negative: "no cats")
-        _ = try await rig.provider.generate(params, references: nil, session: rig.google.session)
+        let built = try NanaBananaProvider.urlRequest(entry: hostile, params: params, references: nil, apiKey: "k")
 
-        let body = try #require(rig.google.requests.first?.bodyJSON)
+        let sentData = try #require(built.httpBody)
+        let body = try #require(try JSONSerialization.jsonObject(with: sentData) as? [String: Any])
         let contents = try #require(body["contents"] as? [[String: Any]])
         let parts = try #require(contents.first?["parts"] as? [[String: Any]])
         #expect(parts[0]["text"] as? String == "owned prompt\n\nAvoid: no cats")

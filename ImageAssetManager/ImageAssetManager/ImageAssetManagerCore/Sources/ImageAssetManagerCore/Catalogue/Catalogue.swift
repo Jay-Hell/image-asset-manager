@@ -94,6 +94,11 @@ public struct Catalogue: Sendable, Equatable {
     /// Request shapes compiled into this build, by catalogue `api` string.
     public static let knownModelAPIs: Set<String> = ["gemini.generateContent"]
     public static let knownRefinementAPI = "anthropic.messages"
+    /// `anthropic-beta` values a catalogue may ask for.
+    public static let allowedAnthropicBetas: Set<String> = ["server-side-fallback-2026-07-01"]
+    public static let maxRefinementTokens = 8192
+    static let allowedEfforts: Set<String> = ["low", "medium", "high"]
+    static let allowedResponseModalities: Set<String> = ["IMAGE", "TEXT"]
     /// Providers this build can call. Routes to others load but are skipped at resolve time.
     public static let compiledProviders: Set<String> = ["nano_banana"]
     /// Tiers the app cannot work without.
@@ -136,23 +141,6 @@ public struct Catalogue: Sendable, Equatable {
         return retired.first { $0.id == id }?.displayName
     }
 
-    /// Lowest USD price the catalogue knows for a model, across the entry and every tier route.
-    public func listPriceUSD(provider: String, modelID: String) -> Decimal? {
-        var prices: [Decimal] = []
-        if let m = model(provider: provider, id: modelID) {
-            if let p = m.usdEstimate { prices.append(p) }
-            prices.append(contentsOf: m.usdByImageSize.values)
-        }
-        for tiers in media.values {
-            for routes in tiers.values {
-                for r in routes where r.provider == provider && r.model == modelID {
-                    if let p = r.usdEstimate { prices.append(p) }
-                }
-            }
-        }
-        return prices.min()
-    }
-
     // MARK: - Errors
 
     public enum ParseError: Error, Equatable, LocalizedError {
@@ -161,6 +149,8 @@ public struct Catalogue: Sendable, Equatable {
         case unsupportedSchema(Int?)
         case invalidRevision
         case noUsableModel(String)
+        /// The refinement entry asks for something the app does not allow (a body key, a beta header).
+        case disallowedContent(String)
 
         public var errorDescription: String? {
             switch self {
@@ -169,6 +159,7 @@ public struct Catalogue: Sendable, Equatable {
             case .unsupportedSchema(let v): return "Catalogue schemaVersion \(v.map(String.init) ?? "missing") is not supported (expected \(Catalogue.supportedSchemaVersion))."
             case .invalidRevision:          return "Catalogue revision is missing or not a positive whole number."
             case .noUsableModel(let t):     return "Catalogue has no usable model for \(t)."
+            case .disallowedContent(let w): return "Catalogue refinement entry is not allowed: \(w)."
             }
         }
     }
@@ -272,12 +263,19 @@ public struct Catalogue: Sendable, Equatable {
                 var headers: [String: String] = [:]
                 for (k, v) in (item["headers"] as? [String: Any]) ?? [:] {
                     if let s = v as? String, allowedHeaders.contains(k.lowercased()) {
+                        // A beta header turns on behaviour the app has not priced or reviewed.
+                        if k.lowercased() == "anthropic-beta", !allowedAnthropicBetas.contains(s) {
+                            throw ParseError.disallowedContent("anthropic-beta \(s)")
+                        }
                         headers[k.lowercased()] = s
                     } else {
                         skipped.append("refinement header \(k)")
                     }
                 }
                 let body = (item["body"] as? [String: Any]).flatMap { JSONValue(any: $0)?.objectValue } ?? [:]
+                if let bad = disallowedBodyKey(api: knownRefinementAPI, body: body) {
+                    throw ParseError.disallowedContent("body \(bad)")
+                }
                 refinement = Refinement(api: knownRefinementAPI, model: model, headers: headers, body: body)
             } else {
                 skipped.append("refinement")
@@ -303,8 +301,57 @@ public struct Catalogue: Sendable, Equatable {
     /// take the ID in a request body. Google IDs go into a URL path, so no slash there.
     public static func isValidModelID(_ id: String, allowSlash: Bool) -> Bool {
         let part = "[a-z0-9][a-z0-9.-]{1,63}"
-        let pattern = allowSlash ? "^\(part)(/\(part))?$" : "^\(part)$"
+        // \A…\z, not ^…$: `$` also matches before a trailing newline, which then reaches a URL path.
+        let pattern = allowSlash ? "\\A\(part)(/\(part))?\\z" : "\\A\(part)\\z"
         return id.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// The first body key the app does not allow for this `api`, or nil if the whole
+    /// body is inside the allow-list. The body is merged into a billed request, so
+    /// anything the app has not priced (tools, extra candidates, MCP servers, a bigger
+    /// token budget) is refused rather than sent.
+    static func disallowedBodyKey(api: String, body: [String: JSONValue]) -> String? {
+        switch api {
+        case "gemini.generateContent":
+            for (key, value) in body {
+                guard key == "generationConfig", let config = value.objectValue else { return key }
+                for (k, v) in config {
+                    switch k {
+                    case "responseModalities":
+                        guard case .array(let items) = v,
+                              items.allSatisfy({ $0.stringValue.map(allowedResponseModalities.contains) ?? false })
+                        else { return "generationConfig.\(k)" }
+                    case "imageConfig":
+                        guard let image = v.objectValue else { return "generationConfig.\(k)" }
+                        for (ik, iv) in image where ik != "imageSize" || iv.stringValue == nil {
+                            return "generationConfig.imageConfig.\(ik)"
+                        }
+                    default:
+                        return "generationConfig.\(k)"
+                    }
+                }
+            }
+            return nil
+        case knownRefinementAPI:
+            for (key, value) in body {
+                switch key {
+                case "max_tokens":
+                    guard case .number(let n) = value, n == n.rounded(), n >= 1, n <= Double(maxRefinementTokens) else { return key }
+                case "output_config":
+                    guard let config = value.objectValue else { return key }
+                    for (k, v) in config where k != "effort" || !(v.stringValue.map(allowedEfforts.contains) ?? false) {
+                        return "output_config.\(k)"
+                    }
+                case "fallbacks":
+                    guard value.stringValue == "default" else { return key }
+                default:
+                    return key
+                }
+            }
+            return nil
+        default:
+            return "(unknown api)"
+        }
     }
 
     static func isProviderName(_ s: String) -> Bool {
@@ -353,6 +400,9 @@ public struct Catalogue: Sendable, Equatable {
             }
         }
         let body = (item["body"] as? [String: Any]).flatMap { JSONValue(any: $0)?.objectValue } ?? [:]
+        if let bad = disallowedBodyKey(api: api, body: body) {
+            return .failure(.init("body key not allowed: \(bad)"))
+        }
         let refs = (item["maxReferenceImages"] as? NSNumber)?.intValue ?? 0
         guard refs >= 0, refs <= 32 else { return .failure(.init("maxReferenceImages out of bounds")) }
 
