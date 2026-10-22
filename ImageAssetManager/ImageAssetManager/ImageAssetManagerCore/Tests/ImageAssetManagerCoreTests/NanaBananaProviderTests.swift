@@ -280,6 +280,65 @@ struct NanaBananaProviderTests {
         ])
     }
 
+    // MARK: - P2-1: a retry that changes model is re-resolved, re-priced and re-gated
+
+    /// Google 404s a model the fresh catalogue retires in favour of the dearer Pro model.
+    private func retiredToDearerRig() throws -> ProviderRig {
+        let fresh = try RepoCatalogue.json { root in
+            root["revision"] = 2
+            let kept = modelList(root).filter { ($0["id"] as? String) != "gemini-2.5-flash-image" }
+            setModelList(&root, kept)
+            root["retired"] = (root["retired"] as! [[String: Any]]) + [
+                ["id": "gemini-2.5-flash-image", "displayName": "Gone", "replacedBy": "gemini-3-pro-image"],
+            ]
+        }
+        return try ProviderRig(remoteBody: fresh, google: { request in
+            request.url.path.contains("gemini-2.5-flash-image") ? (404, Data(), [:]) : (200, geminiSuccessBody(), [:])
+        })
+    }
+
+    private func oldModelParams(_ rig: ProviderRig, budget: GenerationPolicy.BudgetContext?) throws -> GenerationParams {
+        let old = try ModelResolver.resolve(ResolveRequest(explicitModel: "nano_banana:gemini-2.5-flash-image"),
+                                            catalogue: rig.store.snapshot(), providers: ["nano_banana"])
+        return GenerationParams(prompt: "p", model: old.imageModel, aspectRatio: .square, width: 1, height: 1, budget: budget)
+    }
+
+    @Test func p2_aRetryToADearerModelOverBudgetIsRefusedBeforeTheSecondRequest() async throws {
+        let rig = try retiredToDearerRig()
+        // Old model £0.03081 passed a £0.05 cap; the replacement is 0.134 x 0.79 = £0.10586.
+        let limits = GenerationPolicy.BudgetLimits(maxImages: 20, maxCostGBP: Decimal(string: "0.05")!)
+        let params = try oldModelParams(rig, budget: .init(count: 1, limits: limits))
+        await #expect(throws: GenerationPolicy.BudgetViolation.tooCostly(subtotal: Decimal(string: "0.10586")!, max: Decimal(string: "0.05")!)) {
+            try await rig.provider.generate(params, references: nil, session: rig.google.session)
+        }
+        #expect(rig.google.requests.count == 1)   // the 404 only: nothing was sent to the dearer model
+    }
+
+    @Test func p2_aRetryWithinBudgetUsesTheNewModelsSizeAndReportsTheModelUsed() async throws {
+        let rig = try retiredToDearerRig()
+        let limits = GenerationPolicy.BudgetLimits(maxImages: 20, maxCostGBP: Decimal(string: "0.50")!)
+        let params = try oldModelParams(rig, budget: .init(count: 1, limits: limits))
+        #expect(params.model.imageSize == nil)   // the old model took no size
+
+        let result = try await rig.provider.generate(params, references: nil, session: rig.google.session)
+
+        #expect(rig.google.requests.map(\.url.path) == [
+            "/v1beta/models/gemini-2.5-flash-image:generateContent",
+            "/v1beta/models/gemini-3-pro-image:generateContent",
+        ])
+        let config = try #require(rig.google.requests[1].bodyJSON?["generationConfig"] as? [String: Any])
+        #expect((config["imageConfig"] as? [String: Any])?["imageSize"] as? String == "2K")   // Pro's size, not the old model's none
+        #expect(result.modelUsed == "gemini-3-pro-image")
+        #expect(result.estimatedCostGBP == Decimal(string: "0.10586"))
+    }
+
+    @Test func p2_aCallThatNeverChangesModelReportsNoOverride() async throws {
+        let rig = try ProviderRig(google: ok())
+        let result = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
+        #expect(result.modelUsed == nil)
+        #expect(result.estimatedCostGBP == nil)
+    }
+
     @Test func t9_a400IsReportedWithTheProvidersMessageAndNeverAsABadKey() async throws {
         let message = Data(#"{"error":{"code":400,"message":"Invalid value at generationConfig.imageConfig"}}"#.utf8)
         let rig = try ProviderRig(google: { _ in (400, message, [:]) })

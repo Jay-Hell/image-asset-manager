@@ -85,6 +85,9 @@ public struct GenerationParams: @unchecked Sendable {
     public let height: Int
     public let seed: String?
     public let additionalParams: [String: Any]
+    /// The budget this call was gated against. A provider that has to change the model
+    /// mid-call (a 404 retry) checks the new price against it before the second request.
+    public let budget: GenerationPolicy.BudgetContext?
 
     public init(
         prompt: String,
@@ -94,8 +97,10 @@ public struct GenerationParams: @unchecked Sendable {
         width: Int,
         height: Int,
         seed: String? = nil,
-        additionalParams: [String: Any] = [:]
+        additionalParams: [String: Any] = [:],
+        budget: GenerationPolicy.BudgetContext? = nil
     ) {
+        self.budget = budget
         self.prompt = prompt
         self.negativePrompt = negativePrompt
         self.model = model
@@ -113,8 +118,18 @@ public struct GeneratedImage: @unchecked Sendable {
     public let actualCost: Decimal?
     public let seed: String?
     public let rawResponse: [String: Any]
+    /// The model that actually served the request, when the provider changed it mid-call.
+    /// Nil means the model in the request.
+    public let modelUsed: String?
+    /// The GBP estimate for `modelUsed`, set with it.
+    public let estimatedCostGBP: Decimal?
 
-    public init(data: Data, format: String, actualCost: Decimal? = nil, seed: String? = nil, rawResponse: [String: Any] = [:]) {
+    public init(
+        data: Data, format: String, actualCost: Decimal? = nil, seed: String? = nil, rawResponse: [String: Any] = [:],
+        modelUsed: String? = nil, estimatedCostGBP: Decimal? = nil
+    ) {
+        self.modelUsed = modelUsed
+        self.estimatedCostGBP = estimatedCostGBP
         self.data = data
         self.format = format
         self.actualCost = actualCost

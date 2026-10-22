@@ -38,6 +38,18 @@ public enum GenerationPolicy {
         return subtotal
     }
 
+    /// What a call was gated against: how many images and the limits. Carried into the
+    /// provider so a mid-call model change is priced and checked again.
+    public struct BudgetContext: Sendable, Equatable {
+        public let count: Int
+        public let limits: BudgetLimits
+
+        public init(count: Int, limits: BudgetLimits) {
+            self.count = count
+            self.limits = limits
+        }
+    }
+
     // MARK: - Budget clamping (server-held ceiling)
 
     /// The app-held hard ceiling for MCP calls. Caller-supplied `max_images` /

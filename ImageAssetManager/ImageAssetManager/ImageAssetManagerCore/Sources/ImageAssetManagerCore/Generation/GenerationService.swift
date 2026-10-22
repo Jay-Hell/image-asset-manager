@@ -45,6 +45,8 @@ public actor GenerationService {
         public let projectIDs: [String]
         public let tags: [String]
         public let variantFamilyName: String?
+        /// What the caller gated this call against; the provider re-checks it if it must change model.
+        public let budget: GenerationPolicy.BudgetContext?
 
         public var primaryProjectID: String? { projectIDs.first }
 
@@ -58,8 +60,10 @@ public actor GenerationService {
             references: [GenerationReference] = [],
             projectIDs: [String] = [],
             tags: [String] = [],
-            variantFamilyName: String? = nil
+            variantFamilyName: String? = nil,
+            budget: GenerationPolicy.BudgetContext? = nil
         ) {
+            self.budget = budget
             self.prompt = prompt
             self.negativePrompt = negativePrompt
             self.model = model
