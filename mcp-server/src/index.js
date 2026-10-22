@@ -36,7 +36,7 @@ if (!libraryPath) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: 'image-asset-manager', version: '1.0.0' },
+  { name: 'image-asset-manager', version: '1.1.0' },
   { capabilities: { tools: {} } }
 );
 
