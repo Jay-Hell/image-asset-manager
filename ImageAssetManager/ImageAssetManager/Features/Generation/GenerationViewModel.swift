@@ -39,6 +39,8 @@ final class GenerationViewModel {
     var isGenerating: Bool = false
     var generationError: String?
     var generatedImage: GeneratedImage?
+    /// The resolution and gate captured when `generate()` ran. Confirm records from it.
+    private(set) var preparedGeneration: PreparedGeneration?
 
     // MARK: - Post-Generation
     var pendingTags: [String] = []
@@ -88,16 +90,31 @@ final class GenerationViewModel {
     /// MCP uses). The panel never picks a model itself: it hands the resolver the
     /// selection and what is attached, and uses what comes back.
     private func resolveCurrent() throws -> Resolution {
+        let s = try currentSelection()
+        return try ModelResolver.resolveSelection(
+            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+        )
+    }
+
+    /// Resolve and budget-gate in one step (Core's `PreparedGeneration`, same default limits
+    /// as the MCP). `generate()` calls this once; the result is held until confirm or discard.
+    private func prepareCurrent() throws -> PreparedGeneration {
+        let s = try currentSelection()
+        return try PreparedGeneration.prepare(
+            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
+            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers
+        )
+    }
+
+    private func currentSelection() throws -> (provider: String, modelID: String, referenceCount: Int, aspectRatio: String, catalogue: Catalogue, providers: Set<String>) {
         guard let provider = currentProvider, let selected = currentModel else {
             throw ResolveError.unknownModel(selectedModelID ?? "")
         }
-        return try ModelResolver.resolveSelection(
-            provider: provider.providerID,
-            modelID: selected.id,
-            referenceCount: confirmedReferenceIDs.count,
-            aspectRatio: aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight),
-            catalogue: CatalogueStore.shared.snapshot(),
-            providers: Set(availableProviders.map(\.providerID))
+        return (
+            provider.providerID, selected.id, confirmedReferenceIDs.count,
+            aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight),
+            CatalogueStore.shared.snapshot(), Set(availableProviders.map(\.providerID))
         )
     }
 
@@ -211,13 +228,19 @@ final class GenerationViewModel {
     // MARK: - Generation
 
     func generate() async {
-        guard canGenerate, let provider = currentProvider, let model = effectiveModel else { return }
+        guard canGenerate, let provider = currentProvider else { return }
 
         isGenerating = true
         generationError = nil
         generatedImage = nil
+        preparedGeneration = nil
 
         do {
+            // Resolve once and gate before any provider call. Confirm records from this
+            // resolution and never resolves again.
+            let prepared = try prepareCurrent()
+            let model = prepared.resolution.imageModel
+
             let refs: [ReferenceInput]?
             if !confirmedReferenceIDs.isEmpty && provider.supportsReferenceImages {
                 refs = await buildReferenceInputs()
@@ -231,10 +254,12 @@ final class GenerationViewModel {
                 model: model,
                 aspectRatio: aspectRatio,
                 width: resolvedWidth,
-                height: resolvedHeight
+                height: resolvedHeight,
+                budget: prepared.budget
             )
 
             generatedImage = try await provider.generate(params, references: refs)
+            preparedGeneration = prepared
         } catch {
             generationError = error.localizedDescription
         }
@@ -263,7 +288,9 @@ final class GenerationViewModel {
     // MARK: - Confirm / Discard
 
     func confirmGeneration() async throws {
-        guard let result = generatedImage else { return }
+        guard let result = generatedImage, let prepared = preparedGeneration else { return }
+        // What was generated, not what the panel would resolve now.
+        let recorded = prepared.recording(result)
 
         let assetID = UUID().uuidString
         let filename = "\(assetID).\(result.format)"
@@ -279,14 +306,14 @@ final class GenerationViewModel {
             filename: filename,
             fileHash: imageData.sha256,
             projectID: selectedProjectID,
-            providerID: currentProvider?.providerID ?? "",
-            modelID: effectiveModel?.id ?? "",
+            providerID: prepared.resolution.provider,
+            modelID: recorded.modelID,
             prompt: promptText,
             negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
             width: resolvedWidth,
             height: resolvedHeight,
             aspectRatio: aspectRatio.rawValue,
-            estimatedCost: Double(truncating: estimatedCost as NSDecimalNumber),
+            estimatedCost: Double(truncating: recorded.estimatedCostGBP as NSDecimalNumber),
             actualCost: result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) },
             createdAt: now
         )
@@ -299,7 +326,7 @@ final class GenerationViewModel {
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,
-            providerID: currentProvider?.providerID ?? "",
+            providerID: prepared.resolution.provider,
             estimatedCost: asset.estimatedCost,
             actualCost: asset.actualCost,
             timestamp: now
@@ -383,6 +410,7 @@ final class GenerationViewModel {
 
     private func resetPostGeneration() {
         generatedImage = nil
+        preparedGeneration = nil
         pendingTags = []
         tagInputText = ""
         selectedVariantFamilyName = ""

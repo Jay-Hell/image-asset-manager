@@ -156,7 +156,8 @@ extension MCPServer {
                 references: references,
                 projectIDs: resolvedProjects.map(\.id),
                 tags: tags,
-                variantFamilyName: variantFamily
+                variantFamilyName: variantFamily,
+                budget: GenerationPolicy.BudgetContext(count: count, limits: budget)
             )
             let outcome = try await service.generate(request)
             outcomes.append([

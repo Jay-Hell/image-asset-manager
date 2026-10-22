@@ -51,6 +51,7 @@ public enum GenerationPolicy {
     }
 
     // MARK: - Budget clamping (server-held ceiling)
+    // (BudgetViolation's user-facing text is in the extension at the foot of this file.)
 
     /// The app-held hard ceiling for MCP calls. Caller-supplied `max_images` /
     /// `max_cost_gbp` are clamped to this — the server owns the guardrail, not
@@ -110,5 +111,16 @@ public enum GenerationPolicy {
     /// decision, from the catalogue; nothing here names a model.
     public enum Quality: String, Sendable {
         case fast, standard, pro, withReferences = "with_references", auto
+    }
+}
+
+extension GenerationPolicy.BudgetViolation: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .tooManyImages(let count, let max):
+            return "\(count) images is over the limit of \(max) per call."
+        case .tooCostly(let subtotal, let max):
+            return "This would cost about £\(subtotal.formatted(.number.precision(.fractionLength(2)))), over the £\(max.formatted(.number.precision(.fractionLength(2)))) limit per call. Pick a cheaper model or size."
+        }
     }
 }

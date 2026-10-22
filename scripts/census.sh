@@ -2,7 +2,7 @@
 # Census: every check that counts or pins something repo-wide, in one script.
 # Run it before calling a pass done and before any full run.
 #
-#   MIN_TESTS=154 scripts/census.sh
+#   MIN_CORE=172 MIN_APP=1 scripts/census.sh      (MIN_TESTS=n is still honoured for the total)
 #
 # It runs, in order:
 #   1. Core package tests            (swift test)
@@ -11,7 +11,7 @@
 #   4. node --check on mcp-server/src/*.js
 #
 # It fails on any failure. It also fails if a test run reports zero tests, or if the
-# total reported is lower than MIN_TESTS (so a suite that silently stops running is a
+# Core or app count is lower than MIN_CORE / MIN_APP (so a suite that silently stops running is a
 # red, not a green). Exit 0 from a test command is not taken as evidence on its own:
 # the count is read from the output.
 
@@ -20,6 +20,9 @@ set -u -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 MIN_TESTS="${MIN_TESTS:-0}"
+# Separate floors for the two suites; the defaults are the counts at the last green census.
+MIN_CORE="${MIN_CORE:-172}"
+MIN_APP="${MIN_APP:-1}"
 # A generic simulator destination: no named device to go missing when Xcode updates its list.
 IPAD="${IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 PROJECT="$ROOT/ImageAssetManager/ImageAssetManager.xcodeproj"
@@ -74,12 +77,14 @@ echo "checked $NODE_FILES files"
 # Totals.
 TOTAL=$((CORE_COUNT + APP_COUNT))
 step "Census"
-echo "tests: core=$CORE_COUNT app=$APP_COUNT total=$TOTAL (MIN_TESTS=$MIN_TESTS)"
+echo "tests: core=$CORE_COUNT app=$APP_COUNT total=$TOTAL (MIN_CORE=$MIN_CORE MIN_APP=$MIN_APP MIN_TESTS=$MIN_TESTS)"
 if [ "$TOTAL" -le 0 ]; then
   fail "zero tests reported"
-elif [ "$TOTAL" -lt "$MIN_TESTS" ]; then
-  fail "total $TOTAL is lower than MIN_TESTS $MIN_TESTS"
 fi
+# Each suite is held to its own minimum: a drop in one cannot hide behind a gain in the other.
+[ "$CORE_COUNT" -ge "$MIN_CORE" ] || fail "Core count $CORE_COUNT is lower than MIN_CORE $MIN_CORE"
+[ "$APP_COUNT" -ge "$MIN_APP" ] || fail "App count $APP_COUNT is lower than MIN_APP $MIN_APP"
+[ "$TOTAL" -ge "$MIN_TESTS" ] || fail "total $TOTAL is lower than MIN_TESTS $MIN_TESTS"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "CENSUS: FAILED (logs in $LOGS)" >&2
