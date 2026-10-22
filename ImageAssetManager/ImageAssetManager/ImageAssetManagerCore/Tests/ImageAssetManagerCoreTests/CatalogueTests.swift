@@ -65,6 +65,7 @@ struct CatalogueTests {
 
     @Test func t2_aModelNeedingAHigherBuildIsSkipped() throws {
         var root = try JSONSerialization.jsonObject(with: try RepoCatalogue.data()) as! [String: Any]
+        dropOpenRouterRoutes(&root)
         var list = modelList(root)
         list[1]["minBuild"] = 9
         setModelList(&root, list)
@@ -98,8 +99,14 @@ struct CatalogueTests {
         // The pair for the skip test: here every Google model is unusable, so the file is refused.
         #expect(throws: Catalogue.ParseError.self) {
             try Catalogue.parse(try RepoCatalogue.json { root in
+                dropOpenRouterRoutes(&root)
                 setModelList(&root, [])
             })
+        }
+        // The pair: with the OpenRouter routes kept, OpenRouter alone keeps every image tier usable
+        // (the app works with either key alone).
+        #expect(throws: Never.self) {
+            try Catalogue.parse(try RepoCatalogue.json { root in setModelList(&root, []) })
         }
         // A missing required tier is refused too.
         #expect(throws: Catalogue.ParseError.noUsableModel("image/pro")) {
@@ -276,6 +283,7 @@ struct CatalogueTests {
     @Test func aProbeBodyOnATierModelLeavesTheTierUnusableSoTheWholeFileIsRefused() throws {
         #expect(throws: Catalogue.ParseError.self) {
             try RepoCatalogue.parsed { root in
+                dropOpenRouterRoutes(&root)
                 var list = modelList(root)
                 let i = list.firstIndex { ($0["id"] as? String) == "gemini-3-pro-image" }!
                 list[i]["body"] = ["generationConfig": ["imageConfig": ["imageSize": "2K"]], "tools": [["googleSearch": [String: Any]()]]]

@@ -29,6 +29,9 @@ struct SettingsView: View {
                 removalMessage: "The Nano Banana API key will be removed from Keychain."
             )
 
+            // MARK: OpenRouter API Key
+            OpenRouterSettingsSection()
+
             // MARK: Anthropic API Key (prompt refinement)
             KeychainKeyEditor(
                 title: "Anthropic API Key",

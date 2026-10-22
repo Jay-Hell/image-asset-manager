@@ -13,6 +13,8 @@ public struct ResolveRequest: Sendable, Equatable {
     public var referenceCount: Int
     public var aspectRatio: String
     public var resolution: String?
+    /// Only for a model whose live record lists `output_format`. Vector requests default to `svg`.
+    public var outputFormat: String?
 
     public init(
         media: String = "image",
@@ -21,8 +23,10 @@ public struct ResolveRequest: Sendable, Equatable {
         explicitModel: String? = nil,
         referenceCount: Int = 0,
         aspectRatio: String = "1:1",
-        resolution: String? = nil
+        resolution: String? = nil,
+        outputFormat: String? = nil
     ) {
+        self.outputFormat = outputFormat
         self.media = media
         self.quality = quality
         self.require = require
@@ -45,8 +49,12 @@ public struct Resolution: Sendable, Equatable {
     public let maxReferenceImages: Int
     public let estimateUSD: Decimal
     public let estimateGBP: Decimal
-    /// True when the catalogue held no price and the compiled default was used.
-    public let estimateIsDefault: Bool
+    /// Which source the estimate came from (catalogue, OpenRouter endpoint pricing, an observed cost, or the compiled default).
+    public let estimateSource: EstimateSource
+    /// True when nothing priced the model and the compiled default was used.
+    public var estimateIsDefault: Bool { estimateSource == .unknownDefault }
+    /// The `output_format` to send, when the model lists one and the request or media asks for it.
+    public let outputFormat: String?
     /// Set when the first route was not used, or the tier was rerouted.
     public let note: String?
 
@@ -76,6 +84,9 @@ public enum ResolveError: Error, Equatable, Sendable {
     case capabilityUnavailable(missing: [String], alternatives: [String])
     case unsupportedAspectRatio(requested: String, supported: [String])
     case unsupportedResolution(requested: String, supported: [String])
+    case unsupportedOutputFormat(requested: String, supported: [String])
+    /// OpenRouter has a key but its model list has not loaded (first launch offline).
+    case liveListNotLoaded
 }
 
 extension ResolveError: LocalizedError {
@@ -92,13 +103,21 @@ extension ResolveError: LocalizedError {
         case .noRoute(let media, let tier, let needs):
             return "no configured provider can serve \(media)/\(tier) (needs one of: \(needs.joined(separator: ", ")))"
         case .capabilityUnavailable(let missing, let alternatives):
-            let tail = alternatives.isEmpty ? "nothing configured offers it" : "would work: \(alternatives.joined(separator: ", "))"
+            // The error carries the full list; the message shows the first few.
+            let shown = alternatives.prefix(12).joined(separator: ", ")
+            let more = alternatives.count > 12 ? " and \(alternatives.count - 12) more" : ""
+            let tail = alternatives.isEmpty ? "nothing configured offers it" : "would work: \(shown)\(more)"
             return "no route has \(missing.joined(separator: ", ")); \(tail)"
         case .unsupportedAspectRatio(let r, let s):
             return "aspect ratio '\(r)' is not supported by this model (supported: \(s.joined(separator: ", ")))"
         case .unsupportedResolution(let r, let s):
             let list = s.isEmpty ? "none; this model takes no size" : s.joined(separator: ", ")
             return "resolution '\(r)' is not supported by this model (supported: \(list))"
+        case .unsupportedOutputFormat(let r, let s):
+            let list = s.isEmpty ? "none; this model lists no output format" : s.joined(separator: ", ")
+            return "output format '\(r)' is not supported by this model (supported: \(list))"
+        case .liveListNotLoaded:
+            return "OpenRouter's model list has not loaded yet; check the connection and try again"
         }
     }
 }
@@ -115,8 +134,30 @@ public enum ModelResolver {
     public static func resolve(
         _ request: ResolveRequest,
         catalogue: Catalogue,
-        providers: Set<String>
+        providers: Set<String>,
+        live: OpenRouterModels = .empty
     ) throws -> Resolution {
+        // `resolveAll` never returns an empty list: it throws instead.
+        try resolveAll(request, catalogue: catalogue, providers: providers, live: live)[0]
+    }
+
+    /// A model as a route sees it: the catalogue entry for a path-bound provider; for OpenRouter
+    /// the live record (capabilities, ratios, sizes, formats), overlaid with the catalogue's
+    /// entry for the same model if there is one (price, name, body defaults).
+    static func lookup(_ provider: String, _ id: String, catalogue: Catalogue, live: OpenRouterModels) -> Catalogue.Model? {
+        guard provider == "openrouter" else { return catalogue.model(provider: provider, id: id) }
+        return live.model(id)?.asCatalogueModel(overlay: catalogue.model(provider: provider, id: id))
+    }
+
+    /// Every route that can serve the request, in order; the first is what `resolve` returns.
+    /// The rest are the fallbacks a provider failure may move to (spec §5.4): same request,
+    /// same capabilities, parameters checked against each model's own list.
+    public static func resolveAll(
+        _ request: ResolveRequest,
+        catalogue: Catalogue,
+        providers: Set<String>,
+        live: OpenRouterModels = .empty
+    ) throws -> [Resolution] {
         guard let quality = GenerationPolicy.Quality(rawValue: request.quality.lowercased()) else {
             throw ResolveError.unknownQuality(request.quality)
         }
@@ -132,7 +173,7 @@ public enum ModelResolver {
         if request.referenceCount > 0 { needs.insert(.references) }
 
         if let explicit = request.explicitModel {
-            return try resolveExplicit(explicit, needs: needs, request: request, catalogue: catalogue, providers: providers)
+            return [try resolveExplicit(explicit, needs: needs, request: request, catalogue: catalogue, providers: providers, live: live)]
         }
 
         let tier: String
@@ -145,19 +186,31 @@ public enum ModelResolver {
         let routes = catalogue.routes(media: request.media, tier: tier)
         let usable = routes.map { route -> Catalogue.Model? in
             guard providers.contains(route.provider) else { return nil }
-            return catalogue.model(provider: route.provider, id: route.model)
+            return lookup(route.provider, route.model, catalogue: catalogue, live: live)
         }
         guard usable.contains(where: { $0 != nil }) else {
+            if providers.contains("openrouter"), live.isEmpty, routes.contains(where: { $0.provider == "openrouter" }) {
+                throw ResolveError.liveListNotLoaded
+            }
             throw ResolveError.noRoute(media: request.media, tier: tier, needs: Array(Set(routes.map(\.provider))).sorted())
         }
 
-        if let index = usable.indices.first(where: { i in usable[i].map { supportsAll($0, needs) } ?? false }),
-           let model = usable[index] {
+        let capable = usable.indices.filter { i in usable[i].map { supportsAll($0, needs) } ?? false }
+        if let first = capable.first, let firstModel = usable[first] {
             var note: String?
-            if index > 0 {
-                note = "Used \(routes[index].provider) for \(tier): the first route was unavailable"
+            if first > 0 {
+                note = "Used \(routes[first].provider) for \(tier): the first route was unavailable"
             }
-            return try build(model: model, route: routes[index], tier: tier, request: request, catalogue: catalogue, note: note)
+            // The first route's parameters are checked and any failure is the caller's to see;
+            // a later route that cannot take them (its list lacks the ratio) is simply not a fallback.
+            var result = [try build(model: firstModel, route: routes[first], tier: tier, request: request, catalogue: catalogue, note: note, live: live)]
+            for i in capable.dropFirst() {
+                guard let model = usable[i],
+                      let alt = try? build(model: model, route: routes[i], tier: tier, request: request, catalogue: catalogue, note: nil, live: live)
+                else { continue }
+                result.append(alt)
+            }
+            return result
         }
 
         // References were attached but nothing in this tier takes them: reroute, as
@@ -166,9 +219,9 @@ public enum ModelResolver {
             for other in ["standard", "pro", "fast"] where other != tier {
                 let otherRoutes = catalogue.routes(media: request.media, tier: other)
                 for route in otherRoutes where providers.contains(route.provider) {
-                    if let model = catalogue.model(provider: route.provider, id: route.model), supportsAll(model, needs) {
+                    if let model = lookup(route.provider, route.model, catalogue: catalogue, live: live), supportsAll(model, needs) {
                         let note = "Auto-routed to \(other) because references are attached; \(tier) can't use them on this API"
-                        return try build(model: model, route: route, tier: other, request: request, catalogue: catalogue, note: note)
+                        return [try build(model: model, route: route, tier: other, request: request, catalogue: catalogue, note: note, live: live)]
                     }
                 }
             }
@@ -176,7 +229,7 @@ public enum ModelResolver {
 
         throw ResolveError.capabilityUnavailable(
             missing: needs.map(\.rawValue).sorted(),
-            alternatives: alternatives(for: needs, catalogue: catalogue, providers: providers)
+            alternatives: alternatives(for: needs, catalogue: catalogue, providers: providers, live: live)
         )
     }
 
@@ -194,29 +247,31 @@ public enum ModelResolver {
         resolution: String? = nil,
         media: String = "image",
         catalogue: Catalogue,
-        providers: Set<String>
+        providers: Set<String>,
+        live: OpenRouterModels = .empty
     ) throws -> Resolution {
-        let live = catalogue.replacement(for: modelID) ?? modelID
+        let liveID = catalogue.replacement(for: modelID) ?? modelID
         let request = ResolveRequest(
             media: media,
             quality: "standard",
-            explicitModel: "\(provider):\(live)",
+            explicitModel: "\(provider):\(liveID)",
             referenceCount: referenceCount,
             aspectRatio: aspectRatio,
             resolution: resolution
         )
         do {
-            return try resolve(request, catalogue: catalogue, providers: providers)
+            return try resolve(request, catalogue: catalogue, providers: providers, live: live)
         } catch ResolveError.capabilityUnavailable where referenceCount > 0 {
             var rerouted = request
             rerouted.explicitModel = nil
-            let result = try resolve(rerouted, catalogue: catalogue, providers: providers)
+            let result = try resolve(rerouted, catalogue: catalogue, providers: providers, live: live)
             return Resolution(
                 provider: result.provider, model: result.model, tier: result.tier,
                 imageSize: result.imageSize, aspectRatio: result.aspectRatio,
                 maxReferenceImages: result.maxReferenceImages,
                 estimateUSD: result.estimateUSD, estimateGBP: result.estimateGBP,
-                estimateIsDefault: result.estimateIsDefault,
+                estimateSource: result.estimateSource,
+                outputFormat: result.outputFormat,
                 note: "References attached — using \(result.model.displayName)"
             )
         }
@@ -229,7 +284,8 @@ public enum ModelResolver {
         needs: Set<Catalogue.Capability>,
         request: ResolveRequest,
         catalogue: Catalogue,
-        providers: Set<String>
+        providers: Set<String>,
+        live: OpenRouterModels
     ) throws -> Resolution {
         let providerPart: String?
         let id: String
@@ -244,10 +300,10 @@ public enum ModelResolver {
         let found: (String, Catalogue.Model)?
         if let providerPart {
             guard providers.contains(providerPart) else { throw ResolveError.providerNotConfigured(providerPart) }
-            found = catalogue.model(provider: providerPart, id: id).map { (providerPart, $0) }
+            found = lookup(providerPart, id, catalogue: catalogue, live: live).map { (providerPart, $0) }
         } else {
             found = providers.sorted().lazy.compactMap { p in
-                catalogue.model(provider: p, id: id).map { (p, $0) }
+                lookup(p, id, catalogue: catalogue, live: live).map { (p, $0) }
             }.first
         }
         guard let (provider, model) = found else { throw ResolveError.unknownModel(explicit) }
@@ -255,7 +311,7 @@ public enum ModelResolver {
         guard supportsAll(model, needs) else {
             throw ResolveError.capabilityUnavailable(
                 missing: needs.filter { !model.supports($0) }.map(\.rawValue).sorted(),
-                alternatives: alternatives(for: needs, catalogue: catalogue, providers: providers)
+                alternatives: alternatives(for: needs, catalogue: catalogue, providers: providers, live: live)
             )
         }
 
@@ -266,7 +322,7 @@ public enum ModelResolver {
         let ordered = tierNames.filter { tiers[$0] != nil } + tiers.keys.filter { !tierNames.contains($0) }.sorted()
         let route = ordered.lazy.compactMap { tiers[$0] }.flatMap { $0 }
             .first { $0.provider == provider && $0.model == id }
-        return try build(model: model, route: route, tier: nil, request: request, catalogue: catalogue, note: nil, provider: provider)
+        return try build(model: model, route: route, tier: nil, request: request, catalogue: catalogue, note: nil, provider: provider, live: live)
     }
 
     // MARK: - Helpers
@@ -276,12 +332,12 @@ public enum ModelResolver {
     }
 
     /// Tiers and explicit models that would satisfy `needs`, for the error message.
-    static func alternatives(for needs: Set<Catalogue.Capability>, catalogue: Catalogue, providers: Set<String>) -> [String] {
+    static func alternatives(for needs: Set<Catalogue.Capability>, catalogue: Catalogue, providers: Set<String>, live: OpenRouterModels = .empty) -> [String] {
         var found: [String] = []
         for mediaName in catalogue.media.keys.sorted() {
             for tier in tierNames {
                 for route in catalogue.routes(media: mediaName, tier: tier) where providers.contains(route.provider) {
-                    if let m = catalogue.model(provider: route.provider, id: route.model), supportsAll(m, needs) {
+                    if let m = lookup(route.provider, route.model, catalogue: catalogue, live: live), supportsAll(m, needs) {
                         found.append("\(mediaName)/\(tier)")
                         break
                     }
@@ -291,6 +347,12 @@ public enum ModelResolver {
         for provider in providers.sorted() {
             for m in catalogue.models[provider] ?? [] where supportsAll(m, needs) {
                 found.append("\(provider):\(m.id)")
+            }
+            if provider == "openrouter" {
+                for m in live.models.sorted(by: { $0.id < $1.id }) where supportsAll(m.asCatalogueModel(), needs) {
+                    let entry = "openrouter:\(m.id)"
+                    if !found.contains(entry) { found.append(entry) }
+                }
             }
         }
         return found
@@ -303,13 +365,15 @@ public enum ModelResolver {
         request: ResolveRequest,
         catalogue: Catalogue,
         note: String?,
-        provider: String? = nil
+        provider: String? = nil,
+        live: OpenRouterModels = .empty
     ) throws -> Resolution {
         if !model.aspectRatios.isEmpty && !model.aspectRatios.contains(request.aspectRatio) {
             throw ResolveError.unsupportedAspectRatio(requested: request.aspectRatio, supported: model.aspectRatios)
         }
 
-        let imageSize: String?
+        let isOpenRouter = model.api == "openrouter.images"
+        var imageSize: String?
         if let requested = request.resolution {
             guard model.imageSizes.contains(requested) else {
                 throw ResolveError.unsupportedResolution(requested: requested, supported: model.imageSizes)
@@ -317,17 +381,38 @@ public enum ModelResolver {
             imageSize = requested
         } else {
             imageSize = route?.imageSize ?? model.defaultImageSize
+            // A size the catalogue asks for that the live record does not list is not sent.
+            if isOpenRouter, let size = imageSize, !model.imageSizes.contains(size) { imageSize = nil }
+        }
+
+        // Only a model whose live record lists `output_format` is sent one. A vector request
+        // asks for svg unless the caller named a format.
+        let outputFormat: String?
+        if let requested = request.outputFormat {
+            guard model.outputFormats.contains(requested) else {
+                throw ResolveError.unsupportedOutputFormat(requested: requested, supported: model.outputFormats)
+            }
+            outputFormat = requested
+        } else if request.media == "vector", model.outputFormats.contains("svg") {
+            outputFormat = "svg"
+        } else {
+            outputFormat = nil
         }
 
         let usd: Decimal
-        var isDefault = false
+        let source: EstimateSource
         if let size = imageSize, let bySize = model.usdByImageSize[size] {
             usd = bySize
+            source = .catalogue
         } else if let priced = route?.usdEstimate ?? model.usdEstimate {
             usd = priced
+            source = .catalogue
+        } else if isOpenRouter, let learnt = live.prices[model.id] {
+            usd = learnt.usdPerImage
+            source = EstimateSource(rawValue: learnt.source) ?? .endpointPricing
         } else {
             usd = unknownPriceUSD
-            isDefault = true
+            source = .unknownDefault
         }
 
         return Resolution(
@@ -339,7 +424,8 @@ public enum ModelResolver {
             maxReferenceImages: model.maxReferenceImages,
             estimateUSD: usd,
             estimateGBP: usd * catalogue.fx,
-            estimateIsDefault: isDefault,
+            estimateSource: source,
+            outputFormat: outputFormat,
             note: note
         )
     }

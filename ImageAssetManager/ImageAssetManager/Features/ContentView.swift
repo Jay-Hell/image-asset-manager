@@ -101,6 +101,8 @@ struct ContentView: View {
             spendVM = nil
 
             await ProviderRegistry.shared.register(NanaBananaProvider())
+            // A provider with no key is simply unavailable (spec v0.3 §5.1).
+            if OpenRouterProvider.hasKey() { await ProviderRegistry.shared.register(OpenRouterProvider()) }
 
             let newGenVM = GenerationViewModel(database: env.database, libraryURL: env.libraryURL)
             await newGenVM.loadInitialData()

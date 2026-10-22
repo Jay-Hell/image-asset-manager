@@ -88,6 +88,17 @@ public struct GenerationParams: @unchecked Sendable {
     /// The budget this call was gated against. A provider that has to change the model
     /// mid-call (a 404 retry) checks the new price against it before the second request.
     public let budget: GenerationPolicy.BudgetContext?
+    /// The `output_format` the resolver chose (OpenRouter models that list one; `svg` for vector).
+    public let outputFormat: String?
+
+    /// The same request aimed at another route's model.
+    public func retargeted(to model: ImageModel, outputFormat: String?) -> GenerationParams {
+        GenerationParams(
+            prompt: prompt, negativePrompt: negativePrompt, model: model, aspectRatio: aspectRatio,
+            width: width, height: height, seed: seed, additionalParams: additionalParams,
+            budget: budget, outputFormat: outputFormat
+        )
+    }
 
     public init(
         prompt: String,
@@ -98,8 +109,10 @@ public struct GenerationParams: @unchecked Sendable {
         height: Int,
         seed: String? = nil,
         additionalParams: [String: Any] = [:],
-        budget: GenerationPolicy.BudgetContext? = nil
+        budget: GenerationPolicy.BudgetContext? = nil,
+        outputFormat: String? = nil
     ) {
+        self.outputFormat = outputFormat
         self.budget = budget
         self.prompt = prompt
         self.negativePrompt = negativePrompt
@@ -123,11 +136,18 @@ public struct GeneratedImage: @unchecked Sendable {
     public let modelUsed: String?
     /// The GBP estimate for `modelUsed`, set with it.
     public let estimatedCostGBP: Decimal?
+    /// The provider that served the request when a fallback route did. Nil means the one asked.
+    public let providerUsed: String?
+    /// The MIME type the provider declared (or the sniffed one). Nil means `image/<format>`.
+    public let mimeType: String?
 
     public init(
         data: Data, format: String, actualCost: Decimal? = nil, seed: String? = nil, rawResponse: [String: Any] = [:],
-        modelUsed: String? = nil, estimatedCostGBP: Decimal? = nil
+        modelUsed: String? = nil, estimatedCostGBP: Decimal? = nil,
+        providerUsed: String? = nil, mimeType: String? = nil
     ) {
+        self.providerUsed = providerUsed
+        self.mimeType = mimeType
         self.modelUsed = modelUsed
         self.estimatedCostGBP = estimatedCostGBP
         self.data = data

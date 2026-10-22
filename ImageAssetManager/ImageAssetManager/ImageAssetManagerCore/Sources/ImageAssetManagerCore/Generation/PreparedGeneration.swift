@@ -23,11 +23,12 @@ public struct PreparedGeneration: Sendable, Equatable {
         aspectRatio: String,
         catalogue: Catalogue,
         providers: Set<String>,
+        live: OpenRouterModels = .empty,
         limits: GenerationPolicy.BudgetLimits = .defaults
     ) throws -> PreparedGeneration {
         let resolution = try ModelResolver.resolveSelection(
             provider: provider, modelID: modelID, referenceCount: referenceCount,
-            aspectRatio: aspectRatio, catalogue: catalogue, providers: providers
+            aspectRatio: aspectRatio, catalogue: catalogue, providers: providers, live: live
         )
         let budget = GenerationPolicy.BudgetContext(count: 1, limits: limits)
         let subtotal = try GenerationPolicy.checkBudget(count: budget.count, unitCost: resolution.estimateGBP, limits: limits)

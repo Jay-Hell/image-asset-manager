@@ -24,11 +24,15 @@ public actor GenerationService {
     private let database: AppDatabase
     private let libraryURL: URL
     private let provider: any ImageProvider
+    private let router: RouteExecutor?
 
-    public init(database: AppDatabase, libraryURL: URL, provider: any ImageProvider) {
+    /// `router` serves requests that carry `routes` (the resolver's list, first route first);
+    /// without it, or without routes, the one `provider` is called as before.
+    public init(database: AppDatabase, libraryURL: URL, provider: any ImageProvider, router: RouteExecutor? = nil) {
         self.database = database
         self.libraryURL = libraryURL
         self.provider = provider
+        self.router = router
     }
 
     public struct Request: @unchecked Sendable {
@@ -47,6 +51,8 @@ public actor GenerationService {
         public let variantFamilyName: String?
         /// What the caller gated this call against; the provider re-checks it if it must change model.
         public let budget: GenerationPolicy.BudgetContext?
+        /// The resolver's routes for this request, first route first. Empty: use the service's provider.
+        public let routes: [Resolution]
 
         public var primaryProjectID: String? { projectIDs.first }
 
@@ -61,8 +67,10 @@ public actor GenerationService {
             projectIDs: [String] = [],
             tags: [String] = [],
             variantFamilyName: String? = nil,
-            budget: GenerationPolicy.BudgetContext? = nil
+            budget: GenerationPolicy.BudgetContext? = nil,
+            routes: [Resolution] = []
         ) {
+            self.routes = routes
             self.budget = budget
             self.prompt = prompt
             self.negativePrompt = negativePrompt
@@ -103,15 +111,24 @@ public actor GenerationService {
         )
 
         let refInputs = request.references.map(\.input)
-        let result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
+        let result: GeneratedImage
+        if let router, !request.routes.isEmpty {
+            result = try await router.generate(routes: request.routes, base: params, references: refInputs.isEmpty ? nil : refInputs).image
+        } else {
+            result = try await provider.generate(params, references: refInputs.isEmpty ? nil : refInputs)
+        }
+        let servedBy = result.providerUsed ?? provider.providerID
 
         let assetID = UUID().uuidString
-        let filename = "\(assetID).\(result.format)"
         let assetsDir = libraryURL.appending(path: "assets")
-        let fileURL = assetsDir.appending(path: filename)
-
-        try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
-        try result.data.write(to: fileURL)
+        // The one place bytes become a file (pass C): stored as delivered and named for what
+        // they are, so an `image/svg+xml` answer is an SVG asset (T15). A label the bytes
+        // contradict is refused, not trusted.
+        let stored = try AssetStore.store(
+            result.data, mimeType: result.mimeType ?? "image/\(result.format)", assetID: assetID, libraryURL: libraryURL
+        )
+        let filename = stored.filename
+        let fileURL = stored.fileURL
 
         let now = ISO8601DateFormatter().string(from: Date())
         // A provider that changed model mid-call (a 404 retry) says which, and what it costs.
@@ -122,18 +139,19 @@ public actor GenerationService {
         let asset = Asset(
             id: assetID,
             filename: filename,
-            fileHash: result.data.sha256,
+            fileHash: stored.fileHash,
             projectID: request.primaryProjectID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             modelID: modelID,
             prompt: request.prompt,
             negativePrompt: request.negativePrompt,
-            width: request.width,
-            height: request.height,
+            width: stored.width ?? request.width,
+            height: stored.height ?? request.height,
             aspectRatio: request.aspectRatio.rawValue,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
-            createdAt: now
+            createdAt: now,
+            mediaType: stored.mediaType.rawValue
         )
         try await database.insertAsset(asset)
 
@@ -143,7 +161,7 @@ public actor GenerationService {
 
         try await database.insertSpendLog(SpendLog(
             assetID: assetID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
             timestamp: now
@@ -181,7 +199,7 @@ public actor GenerationService {
             filename: filename,
             fileURL: fileURL,
             modelID: modelID,
-            providerID: provider.providerID,
+            providerID: servedBy,
             estimatedCost: estimatedCost,
             actualCost: actualCost,
             seed: result.seed

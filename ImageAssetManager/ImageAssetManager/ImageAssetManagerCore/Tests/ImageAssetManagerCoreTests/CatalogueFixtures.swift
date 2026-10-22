@@ -55,6 +55,15 @@ func setTierRoutes(_ root: inout [String: Any], media: String = "image", tier: S
     root["media"] = mediaDict
 }
 
+/// Removes the OpenRouter route from every image tier, leaving Google as the only way to serve them.
+/// OpenRouter is a compiled provider from pass B, so a tier that keeps an OpenRouter route stays
+/// usable without Google; the tests that need a tier to go dead drop that route first.
+func dropOpenRouterRoutes(_ root: inout [String: Any]) {
+    for tier in ["fast", "standard", "pro"] {
+        setTierRoutes(&root, tier: tier, tierRoutes(root, tier: tier).filter { ($0["provider"] as? String) != "openrouter" })
+    }
+}
+
 /// A fresh temporary directory for a store's cache.
 func makeTempDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appending(path: "iam-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
