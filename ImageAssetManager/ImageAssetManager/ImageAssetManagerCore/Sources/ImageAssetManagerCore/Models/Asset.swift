@@ -23,6 +23,9 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Identifiable, 
     public var importedAt: String?
     public var obsidianEmbedded: Bool
     public var isHidden: Bool
+    /// MIME type (`image/png`, `image/svg+xml`, …). NULL on rows an older build wrote;
+    /// read it through `effectiveMediaType`.
+    public var mediaType: String?
 
     enum CodingKeys: String, CodingKey {
         case id, filename
@@ -42,6 +45,7 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         case importedAt = "imported_at"
         case obsidianEmbedded = "obsidian_embedded"
         case isHidden = "is_hidden"
+        case mediaType = "media_type"
     }
 
     public init(
@@ -63,7 +67,8 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         createdAt: String,
         importedAt: String? = nil,
         obsidianEmbedded: Bool = false,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        mediaType: String? = nil
     ) {
         self.id = id
         self.filename = filename
@@ -84,5 +89,8 @@ public struct Asset: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         self.importedAt = importedAt
         self.obsidianEmbedded = obsidianEmbedded
         self.isHidden = isHidden
+        // Every creation path (generation, import, MCP) gets a media type without each
+        // having to pass one; the filename's extension is what those paths already decide.
+        self.mediaType = mediaType ?? MediaType(filename: filename)?.rawValue
     }
 }

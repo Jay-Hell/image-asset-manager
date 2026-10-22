@@ -17,6 +17,14 @@ public struct MCPAssetSummary: Codable, Sendable {
     public let estimatedCost: Double?
     public let createdAt: String
     public let tags: [String]
+    /// MIME type, as `media_type` on the wire (spec v0.3 §5.5); by extension for older rows.
+    public let mediaType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, filename, filePath, projectID, providerID, modelID, prompt, aspectRatio
+        case width, height, estimatedCost, createdAt, tags
+        case mediaType = "media_type"
+    }
 }
 
 public struct MCPAssetDetail: Codable, Sendable {
@@ -132,7 +140,8 @@ extension AppDatabase {
                     prompt: a.prompt, aspectRatio: a.aspectRatio,
                     width: a.width, height: a.height,
                     estimatedCost: a.estimatedCost, createdAt: a.createdAt,
-                    tags: tagMap[a.id] ?? []
+                    tags: tagMap[a.id] ?? [],
+                    mediaType: a.effectiveMediaType?.rawValue
                 )
             }
         }
@@ -168,7 +177,8 @@ extension AppDatabase {
                 prompt: asset.prompt, aspectRatio: asset.aspectRatio,
                 width: asset.width, height: asset.height,
                 estimatedCost: asset.estimatedCost, createdAt: asset.createdAt,
-                tags: tagNames
+                tags: tagNames,
+                mediaType: asset.effectiveMediaType?.rawValue
             )
             return MCPAssetDetail(asset: summary, references: refEntries, usage: usageEntries)
         }
@@ -215,7 +225,8 @@ extension AppDatabase {
                     prompt: a.prompt, aspectRatio: a.aspectRatio,
                     width: a.width, height: a.height,
                     estimatedCost: a.estimatedCost, createdAt: a.createdAt,
-                    tags: tagMap[a.id] ?? []
+                    tags: tagMap[a.id] ?? [],
+                    mediaType: a.effectiveMediaType?.rawValue
                 )
             }
             // tags column is stored as JSON array string e.g. ["tag1","tag2"]
