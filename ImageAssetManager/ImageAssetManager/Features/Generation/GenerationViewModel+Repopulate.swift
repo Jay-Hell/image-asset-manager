@@ -21,8 +21,7 @@ extension GenerationViewModel {
             showNegativePrompt = true
         }
         if asset.providerID != "imported" {
-            selectedProviderID = asset.providerID
-            selectedModelID = CatalogueStore.shared.liveModelID(for: asset.modelID)
+            selectSpecific(provider: asset.providerID, modelID: asset.modelID)
         }
         if let ratioStr = asset.aspectRatio, let ar = AspectRatio(rawValue: ratioStr) {
             aspectRatio = ar
