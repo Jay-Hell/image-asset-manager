@@ -4,34 +4,36 @@
 
 <h1 align="center">Image Asset Manager</h1>
 
-<p align="center">A native macOS and iPad app for AI image generation, asset management, and consulting workflow integration.</p>
+<p align="center">A native macOS app for AI image generation, asset management, and consulting workflow integration.</p>
 
 ---
 
-> **Status:** v1.0 submitted to the Mac App Store and iPad App Store — review pending.
+> **Status:** v1.1.0 in preparation for the Mac App Store (1.0.1 is the current release). The App Store release is macOS only.
 
 ## What it is
 
 Image Asset Manager brings the discipline of a proper asset library to AI image generation. Every prompt, variant, project, and pound spent is tracked, organised, and retrievable later. Built for designers, brand consultants, and creative directors who use AI imagery in client work.
 
-It is a single universal SwiftUI app with a three-panel layout on macOS and a two-column NavigationSplitView on iPad. iPhone is intentionally out of scope.
+It is a SwiftUI app with a three-panel layout on macOS. The iPad code is kept compiling but is not shipped; iPhone is out of scope.
 
 ## Features
 
-- **AI image generation** across Google's Imagen 4 (Fast, Standard, Ultra) and Gemini 2.5 Flash Image, auto-routed based on whether the prompt has reference images
-- **Per-generation budget guardrails** in GBP — overspend protection enforced before the API call is made
-- **Reference images** by role (style anchor / subject anchor), capped at three per prompt
+- **Two providers, either key alone works** — Google Gemini direct (Google AI Studio key) and OpenRouter (OpenRouter key). You ask for a quality tier (fast, standard, pro) or name a specific model; the app picks the route and falls back to the other provider when one has no key, doesn't know the model or has no credit
+- **A remote model catalogue** — which models each tier uses, their prices and retired names live in a file the app refreshes by itself, so model changes need no app release
+- **Raster and vector assets** — PNG, JPEG, WebP and SVG, with SVG previews drawn from a sanitised copy
+- **Per-generation budget guardrails** in GBP — overspend protection enforced before the API call is made, and every paid call recorded in the spend log, kept or not
+- **Reference images** by role (style anchor / subject anchor), up to the limit of the chosen model
 - **Variant families** group iterations of the same concept so nothing ends up as an orphan generation
 - **Multi-project memberships** — assets can live in multiple projects with a designated primary
 - **Clients, tags, and a structured prompt library** as first-class objects
 - **Spend dashboard** with Swift Charts visualisation by day, model, and project
 - **iCloud Drive** sync by default, or a custom library folder of your choice
-- **Local MCP server** exposes the asset library to Anthropic's Claude Code CLI on `127.0.0.1:47821`
+- **Local MCP server** exposes the asset library to Anthropic's Claude Code CLI on `127.0.0.1:47821`. Tools: `generate` (say what you want — media, quality, required capabilities — and the app chooses the model), `list_generation_options` (what is available now, with estimates), `generate_image` (an alias of `generate` for images), and the library tools `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `get_spend`, `search_prompts`, `get_prompt`, `mark_asset_used`, `upload_asset`. The read tools work from `index.json` when the app is closed
 
 ## Technology
 
 - Swift 6 with strict concurrency throughout
-- SwiftUI on macOS 26 and iPadOS 26
+- SwiftUI on macOS 26 (iPadOS 26 code kept compiling, not shipped)
 - SQLite via [GRDB](https://github.com/groue/GRDB.swift) 7.x — the sole external dependency
 - Swift Charts for the spend dashboard
 - macOS Keychain for API key storage
@@ -68,10 +70,10 @@ swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerC
 
 To use the app you will need:
 
-- A Google AI Studio API key — free to create at https://aistudio.google.com/apikey
+- A Google AI Studio API key (https://aistudio.google.com/apikey), an OpenRouter API key (https://openrouter.ai/keys), or both — either alone is enough
 - Optionally, an Anthropic API key for prompt refinement — https://console.anthropic.com/settings/keys
 
-Both are entered in the in-app **Settings** and stored in Keychain.
+Keys are entered in the in-app **Settings** and stored in Keychain. When OpenRouter is used, prompts and reference images are sent to openrouter.ai under your own key.
 
 ## Repository layout
 

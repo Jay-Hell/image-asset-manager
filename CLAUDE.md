@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Image Asset Manager** — A macOS-primary / iPad-companion SwiftUI app for AI image generation, asset management, and consulting workflow integration. Integrates with iCloud Drive for storage, Obsidian for vault sync, and exposes a local MCP server for Claude Code. iPhone is explicitly out of scope for v1.
+**Image Asset Manager** — A SwiftUI app for AI image generation (Google Gemini direct and OpenRouter), asset management, and consulting workflow integration. Integrates with iCloud Drive for storage and exposes a local MCP server for Claude Code. **The App Store release is macOS only.** The iPad code is kept compiling (the census builds it) but is not shipped. iPhone is out of scope.
 
-Full specification: `/Users/johnlivingston/IonicConsulting/Asset Management Tool/Asset Management Tool - Specification v0.6.md` (working revision). Previous: `v0.5.md` → `v0.4.md`.
+Specs, in `/Users/johnlivingston/IonicConsulting/1. Project Work/Ionic/Image Asset Manager/`: current is `Image Asset Manager — Providers, Catalogue and MCP Specification v0.3.md` (release 1; build-pass reviews in `Build — Release 1/`). The original app spec (v0.6) is in the same folder; superseded versions are under `_Superseded/`.
 
 ## Repository Layout
 
@@ -55,7 +55,7 @@ image-asset-manager/
         Tests/ImageAssetManagerCoreTests/
     ImageAssetManagerTests/             ← App-level tests
   catalogue/v1/models.json              ← the model catalogue (served from the `catalogue` branch)
-  scripts/census.sh                     ← Core + app tests, iPad build, node --check; MIN_CORE=n MIN_APP=n
+  scripts/census.sh                     ← Core + app tests, iPad build, node --check, node tests
   mcp-server/                           ← Node.js MCP proxy (repo root, not in Xcode project)
     src/                                ← index.js, appClient.js, fallback.js, tools.js
 ```
@@ -95,7 +95,7 @@ API keys are stored in Keychain only — never in iCloud, providers.json, or cod
 **Sandbox entitlements** (`ImageAssetManager.entitlements`) — all four are required, don't remove any:
 
 - `com.apple.security.files.user-selected.read-write` — pick a library location via `NSOpenPanel` and retain access via the security-scoped bookmark. **Also mirrored by the `ENABLE_USER_SELECTED_FILES = readwrite` build setting in `project.pbxproj` (Debug + Release)** — both must agree, and the build setting overrides the entitlement file at sign time. If migration suddenly fails with a permissions error, check the build setting hasn't reverted to `readonly`.
-- `com.apple.security.network.client` — outbound HTTPS to Google AI Studio and api.anthropic.com. Without this, every URLSession call returns the misleading `NSURLErrorCannotFindHost` ("server not found").
+- `com.apple.security.network.client` — outbound HTTPS to Google AI Studio, openrouter.ai, api.anthropic.com and the catalogue host. Without this, every URLSession call returns the misleading `NSURLErrorCannotFindHost` ("server not found").
 - `com.apple.security.network.server` — bind the MCP `NWListener` on loopback. Without this, `NWListener(using:)` fails silently and `curl localhost:47821/health` can't connect.
 - iCloud container entitlements (`iCloud.Ionic.ImageAssetManager`) — default library location.
 
@@ -163,13 +163,13 @@ Every provider implements `ImageProvider: Sendable`. Adding a provider requires 
 
 ### Model catalogue
 
-`catalogue/v1/models.json` (repo root) is the one source file: tier → ordered routes (`fast`/`standard`/`pro` for `image`; `openrouter` and `vector` entries are present but skipped until pass B/C), model entries (`aspectRatios`, `maxReferenceImages`, `imageSizes`, prices, a `body` merged *under* the app-owned request fields), `retired` models (display names for old assets, `replacedBy` for project defaults) and the prompt-`refinement` entry. A copy is bundled as `Core/Sources/.../Resources/models.json`; **a test fails if the two differ, so copy the repo file over the bundled one after every edit and raise `revision`.**
+`catalogue/v1/models.json` (repo root) is the one source file: tier → ordered routes (`fast`/`standard`/`pro` for `image`, plus `vector`; routes name `nano_banana` or `openrouter`), model entries (`aspectRatios`, `maxReferenceImages`, `imageSizes`, prices, a `body` merged *under* the app-owned request fields), `retired` models (display names for old assets, `replacedBy` for project defaults) and the prompt-`refinement` entry. A copy is bundled as `Core/Sources/.../Resources/models.json`; **a test fails if the two differ, so copy the repo file over the bundled one after every edit and raise `revision`.**
 
 - `Catalogue.parse` validates (`Catalogue/Catalogue.swift`): schemaVersion 1, size cap, model IDs `^[a-z0-9][a-z0-9.-]{1,63}$` (one `/` allowed except for `nano_banana`, whose IDs go in a URL path), prices in (0, $1.00], headers allow-listed to `anthropic-version`/`anthropic-beta` (beta values to `server-side-fallback-2026-07-01`), and `body` keys allow-listed per `api` (Gemini: `generationConfig.imageConfig.imageSize` and `generationConfig.responseModalities` only; refinement: `max_tokens` 1…8192, `output_config.effort` low/medium/high, `fallbacks: "default"`). A model entry with any other body key is skipped; a refinement entry with one, or with another beta value, refuses the whole file. Model IDs may carry no whitespace or control character (`\A…\z` anchors). A bad model entry is skipped and the rest load; a file that leaves an image tier with no usable route is refused whole.
-- `CatalogueStore` (`.shared`) picks the source: local override (macOS Settings → "Load catalogue from file…", shown with an OVERRIDE badge) > remote cache or bundled, whichever has the higher `revision`. The remote URL is compiled in and points at the `catalogue` branch. Refresh: launch, every 24 h, on demand, and one forced refresh per minute at most when a model answers 404. ETag-conditional; a failed fetch changes nothing. Cache: `Application Support/ImageAssetManagerCatalogue/`, never the library.
+- `CatalogueStore` (`.shared`) picks the source: local override (macOS Settings → "Load catalogue from file…", shown with an OVERRIDE badge) > remote cache or bundled, whichever has the higher `revision`. The remote URL is compiled in: `https://raw.githubusercontent.com/Jay-Hell/image-asset-manager/catalogue/catalogue/v1/models.json` (the repo must stay public and keep its name). Refresh: launch, every 24 h, on demand, and one forced refresh per minute at most when a model answers 404. ETag-conditional; a failed fetch changes nothing. Cache: `Application Support/ImageAssetManagerCatalogue/`, never the library.
 - `ModelResolver.resolve` (pure, `Catalogue/ModelResolver.swift`) turns media + quality + required capabilities + optional explicit model + configured providers into a `Resolution` (provider, model, `imageSize`, reference cap, estimate, note). The MCP handler and the panel (`resolveSelection`) both call it; neither picks a model. The panel goes through `PreparedGeneration.prepare` (Core): resolve once, run `checkBudget` (20 images / £2.50, as the MCP) on the estimate before any provider call, and hold the result; confirm records from it (`recording(_:)`) and never re-resolves. `GenerationParams.budget` carries the gate to the provider: a 404 retry re-resolves from the request (new size, new price), re-checks the budget, and reports `GeneratedImage.modelUsed`/`estimatedCostGBP`, which `GenerationService` stores. An explicit model on two tiers takes the first in tier order (fast, standard, pro). `with_references` = `standard` + `references`; `auto` = `standard`.
 - **OpenRouter (pass B).** `OpenRouterProvider` (`openrouter`, request shape `openrouter.images`): `POST https://openrouter.ai/api/v1/images`, Bearer key, model ID in the body. It sends only the parameters the model's live record lists (`aspect_ratio`, `resolution`, `n`, `output_format`, `input_references` as base64); an unlisted value is rejected with the list. `OpenRouterModelStore` (`.shared`) holds the public `GET /images/models` list (launch, 24 h, one forced refresh a minute on a 404; cache beside the catalogue cache; a failed or empty fetch never replaces a good cache) plus learnt per-image prices (`/endpoints` records, then the first real `usage.cost`). The resolver takes `live:`; capabilities for OpenRouter models come from the live record, and `Resolution.estimateSource` says where the price came from. `ModelResolver.resolveAll` returns every usable route; `RouteExecutor` walks them and falls back on exactly three conditions (no key, 404, 402), each once per request, re-checking the budget at the next route's price; anything else is reported. `GenerationService` stores output through `AssetStore` (SVG as SVG) and records `GeneratedImage.providerUsed`. The `openrouter.images` catalogue body allow-list is `resolution` and `output_format` only. References go as `{"type":"image_url","image_url":{"url":"data:<sniffed MIME>;base64,…"}}` (OpenRouter's published shape); the `/key` response fields are unproven until an authenticated call (spec §10). **Usable on this install:** `CatalogueStore` (given `configuredProviders`; `.shared` reads the Keychain) refuses a fetched or override file unless every image tier has a route whose provider is compiled and has a key here (no key at all: judged on its own terms); `ProviderKeyChange.refresh()` runs from Settings on a key save/remove. **Live list:** a failed fetch with no cache retries after 1, 5, 30 min, then 24 h; `refreshIfNotLoaded()` fetches on demand (MCP, one a minute). **Every paid call is recorded exactly once.** `GenerationService.call` writes a `refused_spend` row (reason "not kept", ID = the `Generated.chargeID`) the moment a paid image exists, before the caller sees it (`v9_refused_spend`; the `spend_entries` view unions it with `spend_log` for every spend total). `record` (Keep) swaps it for the asset and a `spend_log` row in one transaction (`AppDatabase.keepCharge`); the asset ID and the spend row's ID are the charge ID, so a second Keep, after a failed one too, finds the asset and writes nothing. Discard, a second Generate and quitting leave the "not kept" row, so the spend counts. A refused image (`outputRefused`) updates that row's reason; a 200 with a cost and no image (`ProviderError.chargedNoImage`) writes a "no image returned" row at the actual cost and throws `outputRefused`.
-- Retiring a model is a file edit: set `retired` + `replacedBy`, raise `revision`, publish to the `catalogue` branch. Merging code never changes live models.
+- **Publishing a catalogue revision** (a model change needs no app release; merging code never changes live models): edit `catalogue/v1/models.json` on a feature branch, raise `revision`, copy it over the bundled `models.json`, run the Core tests, merge. Then, as a separate deliberate step, put the same file at `catalogue/v1/models.json` on the `catalogue` branch and push that branch. Retiring a model is the same edit: set `retired` + `replacedBy`. Check the raw URL serves the new `revision` before saying it is live.
 
 ### Prompt refinement
 
@@ -185,7 +185,7 @@ Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/I
 - `mergeReferences(project:explicit:maxReferences:)` — combines project active refs with explicit asset IDs, caps at the resolved model's `maxReferenceImages` (from the catalogue), project refs take precedence when over-cap.
 - `Quality` — the caller-facing names (`fast`/`standard`/`pro`/`with_references`/`auto`). Which model each means is `ModelResolver`'s decision.
 
-`PromptFlattener` accepts either a plain string or `[String: Any]` and emits Subject-Context-Style-ordered prose. Canonical keys (`subject`, `context`, `action`, `setting`, `style`, `composition`, `lighting`, `mood`, `camera`, `palette`, `details`, `extra`) are emitted in order; arbitrary keys are flattened with title-cased labels; non-prompt keys (`seed`, `steps`, `sampler`, `cfg_scale`, etc.) are dropped. Research found neither Imagen 4 nor Gemini 2.5 Flash Image has a native JSON input — both want prose in a single string.
+`PromptFlattener` accepts either a plain string or `[String: Any]` and emits Subject-Context-Style-ordered prose. Canonical keys (`subject`, `context`, `action`, `setting`, `style`, `composition`, `lighting`, `mood`, `camera`, `palette`, `details`, `extra`) are emitted in order; arbitrary keys are flattened with title-cased labels; non-prompt keys (`seed`, `steps`, `sampler`, `cfg_scale`, etc.) are dropped. Image models take prose in a single string, not native JSON, so structured prompts are flattened before sending.
 
 ### MCP Tools
 
@@ -216,7 +216,7 @@ Offline: `fallback.js` throws a specific "needs the app" error for the three gen
 ### Platform Strategy
 
 - macOS: full three-panel layout (Source Panel 220pt | Content Grid | Inspector 280pt), NSToolbar, Swift Charts, MCP server, export presets, full spend dashboard.
-- iPad: two-column `NavigationSplitView`; scoped feature set (library, generation, prompts, variants, read-only spend).
+- iPad: two-column `NavigationSplitView`; scoped feature set (library, generation, prompts, variants, read-only spend). Kept compiling, not shipped: the App Store release is macOS only.
 - Use `#if os(macOS)` for platform-specific code. Never add iPhone layout code.
 
 ## Key Conventions
@@ -272,7 +272,7 @@ Two service names are currently in use in the codebase — this is drift, not by
 | Layer | Technology |
 |---|---|
 | Language | Swift 6.0 (strict concurrency) |
-| UI | SwiftUI — macOS primary, iPad companion |
+| UI | SwiftUI — macOS shipped, iPad kept compiling |
 | Database | SQLite via GRDB 7.x |
 | Keychain | Swift Security framework |
 | iCloud Sync | iCloud Drive via FileManager |
@@ -307,6 +307,8 @@ swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerC
 xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManagerCore \
   -scheme ImageAssetManagerCore -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'
 ```
+
+**Census** (run before calling a pass done; it fails on a zero or lower-than-floor count): `MIN_CORE=317 MIN_APP=1 MIN_NODE=11 scripts/census.sh`. Floors are the last green counts; raise them when tests are added.
 
 **macOS app tests launch the app as their host.** Under XCTest (`TestHostIsolation.isTestHost`, from the variables XCTest sets) `AppEnvironment.make()` opens a fresh library under the temporary directory and never reads the bookmark, UserDefaults or iCloud; the window shows no library UI and the MCP listener does not start. `ImageAssetManagerTests` asserts the library the host actually opened is inside the temporary directory. Keep that test, and keep anything new at launch behind `isTestHost`.
 

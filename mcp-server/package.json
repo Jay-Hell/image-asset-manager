@@ -1,6 +1,6 @@
 {
   "name": "image-asset-manager-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for Image Asset Manager — proxies to localhost:47821 when the app is running, falls back to index.json when offline.",
   "type": "module",
   "bin": {
