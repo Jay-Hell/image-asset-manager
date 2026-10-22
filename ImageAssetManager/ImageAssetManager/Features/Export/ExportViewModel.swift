@@ -93,6 +93,10 @@ final class ExportViewModel {
 
     func exportAsset(_ asset: Asset, libraryURL: URL) async {
         guard let destDir = destinationURL else { return }
+        if asset.mediaKind == .vector {
+            exportVectorAsset(asset, libraryURL: libraryURL, to: destDir)
+            return
+        }
         let chosen = presets.filter { selectedPresetIDs.contains($0.id) }
         guard !chosen.isEmpty else { return }
 
@@ -131,6 +135,21 @@ final class ExportViewModel {
         }
 
         exportResults = results
+        isExporting = false
+    }
+
+    /// SVG goes out as stored; raster presets do not apply to vector assets.
+    private func exportVectorAsset(_ asset: Asset, libraryURL: URL, to destDir: URL) {
+        isExporting = true
+        let fileURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
+        let base = (asset.filename as NSString).deletingPathExtension
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let outURL = try ImageExporter.exportVector(svgData: data, to: destDir, baseFilename: base)
+            exportResults = [ExportResult(presetName: "SVG as stored", outputFilename: outURL.lastPathComponent, error: nil)]
+        } catch {
+            exportResults = [ExportResult(presetName: "SVG as stored", outputFilename: "\(base).svg", error: error.localizedDescription)]
+        }
         isExporting = false
     }
 

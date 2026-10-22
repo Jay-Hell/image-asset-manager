@@ -65,13 +65,27 @@ struct ExportSheetView: View {
                     Label("New Preset", systemImage: "plus")
                 }
                 .help("New Preset")
+                .disabled(isVector)
             }
         }
     }
 
+    private var isVector: Bool { asset.mediaKind == .vector }
+
     private var presetList: some View {
         Group {
-            if viewModel.presets.isEmpty {
+            if isVector {
+                // Raster presets do not apply to SVG in release 1: it leaves as stored.
+                VStack(spacing: 12) {
+                    Image(systemName: "scribble.variable")
+                        .font(.system(size: 36))
+                        .foregroundStyle(Color.appTextSecondary)
+                    Text("SVG exports exactly as stored. Raster presets don't apply.")
+                        .font(.callout)
+                        .foregroundStyle(Color.appTextSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.presets.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "square.and.arrow.up.on.square")
                         .font(.system(size: 36))
@@ -167,7 +181,8 @@ struct ExportSheetView: View {
 
     private var actionBar: some View {
         HStack {
-            Text(viewModel.selectedPresetIDs.isEmpty
+            Text(isVector ? "SVG, as stored"
+                 : viewModel.selectedPresetIDs.isEmpty
                  ? "Select at least one preset"
                  : "\(viewModel.selectedPresetIDs.count) preset(s) selected")
                 .font(.caption)
@@ -187,7 +202,7 @@ struct ExportSheetView: View {
     }
 
     private var canExport: Bool {
-        !viewModel.selectedPresetIDs.isEmpty &&
+        (isVector || !viewModel.selectedPresetIDs.isEmpty) &&
         viewModel.destinationURL != nil &&
         !viewModel.isExporting
     }
