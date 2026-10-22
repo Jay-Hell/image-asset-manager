@@ -13,6 +13,9 @@ enum RepoCatalogue {
 
     static let fileURL = rootURL.appending(path: "catalogue/v1/models.json")
 
+    /// A revision newer than the bundled catalogue's, so a catalogue bump never breaks a "newer remote" fixture.
+    static var newerRevision: Int { Catalogue.bundledCopy().revision + 1 }
+
     static func data() throws -> Data { try Data(contentsOf: fileURL) }
 
     static func parsed() throws -> Catalogue { try Catalogue.parse(try data()) }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
+  "revision": 3,
   "updated": "2026-10-22",
   "fx": { "usdToGBP": 0.79 },
   "media": {
@@ -16,7 +16,7 @@
         ],
         "pro": [
           { "provider": "nano_banana", "model": "gemini-3-pro-image", "imageSize": "2K", "usdEstimate": 0.134 },
-          { "provider": "openrouter", "model": "google/gemini-3-pro-image", "usdEstimate": 0.134 }
+          { "provider": "openrouter", "model": "google/gemini-3-pro-image", "imageSize": "2K", "usdEstimate": 0.134 }
         ]
       }
     },

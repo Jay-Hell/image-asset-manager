@@ -206,7 +206,7 @@ struct AnthropicClientTests {
     }
 
     @Test func a404RefreshesTheCatalogueOnceAndRetriesOnce() async throws {
-        let rig = try ClientRig(remoteBody: try RepoCatalogue.json { $0["revision"] = 2 }, status: 404, body: Data())
+        let rig = try ClientRig(remoteBody: try RepoCatalogue.json { $0["revision"] = RepoCatalogue.newerRevision }, status: 404, body: Data())
         await #expect(throws: AnthropicError.modelUnavailable("claude-sonnet-5-5")) { try await rig.ask() }
         #expect(rig.anthropic.requests.count == 2)
         #expect(rig.remote.requests.count == 1)
@@ -214,7 +214,7 @@ struct AnthropicClientTests {
 
     @Test func theRetryUsesTheRefreshedModel() async throws {
         let fresh = try RepoCatalogue.json { root in
-            root["revision"] = 2
+            root["revision"] = RepoCatalogue.newerRevision
             var r = root["refinement"] as! [String: Any]
             r["model"] = "claude-newer-1"
             root["refinement"] = r

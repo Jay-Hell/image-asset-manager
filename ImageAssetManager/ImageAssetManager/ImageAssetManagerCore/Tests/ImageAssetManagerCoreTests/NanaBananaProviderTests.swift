@@ -69,7 +69,7 @@ struct NanaBananaProviderTests {
     @Test func aNewCatalogueRevisionChangesTheListWithoutAnyCodeChange() async throws {
         let rig = try ProviderRig(
             remoteBody: try RepoCatalogue.json { root in
-                root["revision"] = 2
+                root["revision"] = RepoCatalogue.newerRevision
                 var list = modelList(root)
                 list.append(["id": "gemini-brand-new", "api": "gemini.generateContent", "displayName": "Brand New",
                              "aspectRatios": ["1:1"], "maxReferenceImages": 2, "usdEstimate": 0.5])
@@ -264,7 +264,7 @@ struct NanaBananaProviderTests {
     // MARK: - T9: errors
 
     @Test func t9_a404RaisesModelUnavailableAfterOneRefreshAndOneRetry() async throws {
-        let rig = try ProviderRig(remoteBody: try RepoCatalogue.json { $0["revision"] = 2 }, google: { _ in (404, Data(), [:]) })
+        let rig = try ProviderRig(remoteBody: try RepoCatalogue.json { $0["revision"] = RepoCatalogue.newerRevision }, google: { _ in (404, Data(), [:]) })
         do {
             _ = try await rig.provider.generate(try rig.params(), references: nil, session: rig.google.session)
             Issue.record("expected modelUnavailable")
@@ -273,13 +273,13 @@ struct NanaBananaProviderTests {
         }
         #expect(rig.google.requests.count == 2)   // the call and one retry, no more
         #expect(rig.remote.requests.count == 1)   // one forced catalogue refresh
-        #expect(rig.store.status().revision == 2)
+        #expect(rig.store.status().revision == RepoCatalogue.newerRevision)
     }
 
     @Test func t9_theRetryRecoversWhenTheRefreshedCatalogueRetiresTheModel() async throws {
         // Google 404s the old model; the fresh catalogue retires it in favour of another.
         let fresh = try RepoCatalogue.json { root in
-            root["revision"] = 2
+            root["revision"] = RepoCatalogue.newerRevision
             let kept = modelList(root).filter { ($0["id"] as? String) != "gemini-3.1-flash-image" }
             setModelList(&root, kept)
             root["retired"] = (root["retired"] as! [[String: Any]]) + [
@@ -307,7 +307,7 @@ struct NanaBananaProviderTests {
     /// Google 404s a model the fresh catalogue retires in favour of the dearer Pro model.
     private func retiredToDearerRig() throws -> ProviderRig {
         let fresh = try RepoCatalogue.json { root in
-            root["revision"] = 2
+            root["revision"] = RepoCatalogue.newerRevision
             let kept = modelList(root).filter { ($0["id"] as? String) != "gemini-2.5-flash-image" }
             setModelList(&root, kept)
             root["retired"] = (root["retired"] as! [[String: Any]]) + [
