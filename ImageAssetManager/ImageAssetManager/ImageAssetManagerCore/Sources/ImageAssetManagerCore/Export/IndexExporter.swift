@@ -74,6 +74,15 @@ struct IndexAssetRecord: Codable, Sendable {
     let createdAt: String
     let tags: [String]
     let obsidianEmbedded: Bool
+    /// MIME type; NULL rows from an older build are reported by extension.
+    let mediaType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, filename, filePath, projectID, projectIDs, projectNames, providerID, modelID
+        case prompt, aspectRatio, width, height, estimatedCost, actualCost, createdAt, tags
+        case obsidianEmbedded
+        case mediaType = "media_type"
+    }
 
     init(asset: Asset, tags: [String], projectIDs: [String], projectNames: [String], filePath: String) {
         self.id = asset.id
@@ -93,5 +102,6 @@ struct IndexAssetRecord: Codable, Sendable {
         self.createdAt = asset.createdAt
         self.tags = tags
         self.obsidianEmbedded = asset.obsidianEmbedded
+        self.mediaType = asset.effectiveMediaType?.rawValue
     }
 }

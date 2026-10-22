@@ -48,6 +48,15 @@ public struct ImageExporter: Sendable {
         return outputURL
     }
 
+    /// SVG leaves as it is held: the library's own bytes, named `.svg`. Raster presets do not
+    /// apply to vector assets in release 1.
+    @discardableResult
+    public static func exportVector(svgData: Data, to destinationDir: URL, baseFilename: String) throws -> URL {
+        let outputURL = destinationDir.appending(path: "\(baseFilename).\(MediaType.svg.fileExtension)")
+        try svgData.write(to: outputURL, options: .atomic)
+        return outputURL
+    }
+
     // MARK: - Private helpers
 
     private static func computeTargetSize(
