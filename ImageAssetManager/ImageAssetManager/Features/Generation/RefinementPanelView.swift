@@ -158,6 +158,13 @@ struct RefinementPanelView: View {
                 Divider().overlay(Color.appBorder)
             }
 
+            // The provider's message in full, on its own row: it can be several lines.
+            if let err = session.error {
+                ErrorMessageText(message: err, size: 11)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 8)
+            }
+
             HStack(spacing: 8) {
                 if session.mode == .interview && !session.isComplete {
                     TextField("Your reply…", text: $replyText)
@@ -168,14 +175,6 @@ struct RefinementPanelView: View {
                         .padding(.vertical, 6)
                         .background(Color.appSurfaceRaised, in: RoundedRectangle(cornerRadius: 6))
                         .onSubmit { submitReply() }
-                }
-
-                if let err = session.error {
-                    Text(err)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                        .frame(maxWidth: 200)
                 }
 
                 Spacer()

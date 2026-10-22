@@ -22,8 +22,26 @@ final class GenerationViewModel {
     }
     var referenceEntries: [ReferenceEntry] = []
     var confirmedReferenceIDs: Set<String> = []
-    var selectedProviderID: String?
-    var selectedModelID: String?
+
+    /// What the user asks for: a quality tier (the app picks the model and has a fallback) or
+    /// "Specific model…" (one named model, no fallback).
+    enum TierChoice: String, CaseIterable, Identifiable {
+        case fast, standard, pro, specific
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .fast: return "Fast"
+            case .standard: return "Standard"
+            case .pro: return "Pro"
+            case .specific: return "Specific model…"
+            }
+        }
+    }
+    var tierChoice: TierChoice = .standard
+    /// `provider:model`, when `tierChoice` is `.specific`.
+    var specificModelRef: String?
+    /// Catalogue models and the OpenRouter live list, image only; filled when the panel loads.
+    var modelOptions: [ModelOption] = []
 
     // MARK: - Prompt
     var promptText: String = ""
@@ -41,6 +59,10 @@ final class GenerationViewModel {
     var generatedImage: GeneratedImage?
     /// The resolution and gate captured when `generate()` ran. Confirm records from it.
     private(set) var preparedGeneration: PreparedGeneration?
+    /// The provider's answer, held until the user keeps or discards it. Nothing is stored yet.
+    private var pendingGenerated: GenerationService.Generated?
+    private var pendingPrompt = ""
+    private var pendingReferences: [GenerationReference] = []
 
     // MARK: - Post-Generation
     var pendingTags: [String] = []
@@ -74,80 +96,107 @@ final class GenerationViewModel {
 
     // MARK: - Computed
 
-    var currentProvider: (any ImageProvider)? {
-        availableProviders.first { $0.providerID == selectedProviderID }
-    }
+    private var providerIDs: Set<String> { Set(availableProviders.map(\.providerID)) }
 
-    var currentModel: ImageModel? {
-        guard let provider = currentProvider else { return nil }
-        // A stored ID for a retired model (old project default, old asset) reads as its replacement.
-        let wanted = selectedModelID.map { CatalogueStore.shared.liveModelID(for: $0) }
-        return provider.availableModels.first { $0.id == wanted }
-            ?? provider.availableModels.first
-    }
+    private var apiRatio: String { aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight) }
 
-    /// The route for the next generation, from the shared resolver (the same function the
-    /// MCP uses). The panel never picks a model itself: it hands the resolver the
-    /// selection and what is attached, and uses what comes back.
-    private func resolveCurrent() throws -> Resolution {
-        let s = try currentSelection()
-        return try ModelResolver.resolveSelection(
-            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
-            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers,
-            live: OpenRouterModelStore.shared.snapshot()
-        )
-    }
-
-    /// Resolve and budget-gate in one step (Core's `PreparedGeneration`, same default limits
-    /// as the MCP). `generate()` calls this once; the result is held until confirm or discard.
-    private func prepareCurrent() throws -> PreparedGeneration {
-        let s = try currentSelection()
-        return try PreparedGeneration.prepare(
-            provider: s.provider, modelID: s.modelID, referenceCount: s.referenceCount,
-            aspectRatio: s.aspectRatio, catalogue: s.catalogue, providers: s.providers,
-            live: OpenRouterModelStore.shared.snapshot()
-        )
-    }
-
-    private func currentSelection() throws -> (provider: String, modelID: String, referenceCount: Int, aspectRatio: String, catalogue: Catalogue, providers: Set<String>) {
-        guard let provider = currentProvider, let selected = currentModel else {
-            throw ResolveError.unknownModel(selectedModelID ?? "")
+    /// The picker state as the Core selection the MCP's resolver path also understands.
+    var selection: PanelSelection? {
+        switch tierChoice {
+        case .specific:
+            guard let ref = specificModelRef, let colon = ref.firstIndex(of: ":") else { return nil }
+            return .model(provider: String(ref[..<colon]), id: String(ref[ref.index(after: colon)...]))
+        case .fast, .standard, .pro:
+            return .tier(tierChoice.rawValue)
         }
-        return (
-            provider.providerID, selected.id, confirmedReferenceIDs.count,
-            aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight),
-            CatalogueStore.shared.snapshot(), Set(availableProviders.map(\.providerID))
+    }
+
+    /// The decision for the next generation, from Core (the planner the MCP also uses): resolved
+    /// and budget-gated, with the fallback routes. The panel never picks a model itself. This is
+    /// the instant form for the screen; `generate()` repeats it through the planner, which may
+    /// first fetch a price, and then holds the result.
+    private func preview() throws -> PreparedGeneration {
+        guard let selection else { throw ResolveError.unknownModel(specificModelRef ?? "") }
+        return try PreparedGeneration.prepare(
+            selection: selection, referenceCount: confirmedReferenceIDs.count, aspectRatio: apiRatio,
+            catalogue: CatalogueStore.shared.snapshot(), providers: providerIDs,
+            live: OpenRouterModelStore.shared.snapshot()
         )
     }
 
-    /// The model that will actually be used for the next generation. Reroutes to a
+    /// The model that will be tried first for the next generation. Reroutes to a
     /// reference-capable model (with a note) when refs are attached and the selection
     /// can't take them.
-    var effectiveModel: ImageModel? { try? resolveCurrent().imageModel }
+    var effectiveModel: ImageModel? { try? preview().resolution.imageModel }
+
+    /// "Gemini 3 Pro Image · Google Gemini": what the next generation will use.
+    var resolvedSummary: String? {
+        guard let resolution = try? preview().resolution else { return nil }
+        return "\(displayName(of: resolution.model.id, fallback: resolution.model.displayName)) · \(providerName(resolution.provider))"
+    }
 
     /// Non-nil when the generation will use a different model than the user selected
     /// (e.g. rerouting because refs are attached), or when no route is available.
     var modelRouteNote: String? {
-        do { return try resolveCurrent().note } catch { return error.localizedDescription }
+        do { return try preview().resolution.note } catch { return error.localizedDescription }
     }
 
-    var estimatedCost: Decimal {
-        guard let provider = currentProvider, let model = effectiveModel else { return 0 }
-        let params = GenerationParams(
-            prompt: promptText,
-            model: model,
-            aspectRatio: aspectRatio,
-            width: resolvedWidth,
-            height: resolvedHeight
-        )
-        return provider.estimateCost(params)
-    }
+    var estimatedCost: Decimal { (try? preview().resolution.estimateGBP) ?? 0 }
 
     var canGenerate: Bool {
         !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && currentProvider != nil
+            && !availableProviders.isEmpty
+            && selection != nil
             && effectiveModel != nil
             && !isGenerating
+    }
+
+    /// References can be attached whenever any provider is configured; the resolver picks a
+    /// model that takes them (or says why none does).
+    var canAttachReferences: Bool { !availableProviders.isEmpty }
+
+    /// After generating: what served it, and why, including any fallback. Nil before.
+    var servedSummary: String? {
+        guard let prepared = preparedGeneration, let image = generatedImage else { return nil }
+        let model = recordedModel(prepared, image)
+        let provider = image.providerUsed ?? prepared.resolution.provider
+        return "\(displayName(of: model, fallback: model)) · \(providerName(provider))"
+    }
+
+    var servedNotes: [String] {
+        guard let prepared = preparedGeneration else { return [] }
+        return [prepared.resolution.note].compactMap { $0 } + (pendingGenerated?.fallbackNotes ?? [])
+    }
+
+    private func recordedModel(_ prepared: PreparedGeneration, _ image: GeneratedImage) -> String {
+        prepared.recording(image).modelID
+    }
+
+    private func displayName(of modelID: String, fallback: String) -> String {
+        CatalogueStore.shared.snapshot().displayName(forModelID: modelID) ?? fallback
+    }
+
+    private func providerName(_ id: String) -> String {
+        availableProviders.first { $0.providerID == id }?.displayName ?? id
+    }
+
+    /// The "Specific model…" list, grouped by provider, each with its estimate.
+    var modelGroups: [(provider: String, name: String, options: [ModelOption])] {
+        var order: [String] = []
+        for option in modelOptions where !order.contains(option.provider) { order.append(option.provider) }
+        return order.map { id in (id, providerName(id), modelOptions.filter { $0.provider == id }) }
+    }
+
+    func refreshModelOptions() {
+        modelOptions = ModelOptions.all(
+            catalogue: CatalogueStore.shared.snapshot(), providers: providerIDs, live: OpenRouterModelStore.shared.snapshot()
+        ).filter { $0.media == "image" }
+    }
+
+    func selectSpecific(provider: String, modelID: String) {
+        tierChoice = .specific
+        // A stored ID for a retired model (old project default, old asset) reads as its replacement.
+        specificModelRef = "\(provider):\(CatalogueStore.shared.liveModelID(for: modelID))"
     }
 
     var resolvedWidth: Int {
@@ -173,22 +222,18 @@ final class GenerationViewModel {
     // MARK: - Loading
 
     func loadInitialData() async {
-        async let providersResult = ProviderRegistry.shared.allProviders()
+        // The same decision the MCP makes: compiled in and a key present (spec v0.3 §5.1).
+        let providersResult = ProviderAvailability.usable()
         async let projectsResult = (try? database.fetchProjects()) ?? []
         async let promptsResult = (try? database.fetchPrompts()) ?? []
 
-        let (providers, projs, prompts) = await (providersResult, projectsResult, promptsResult)
+        let (projs, prompts) = await (projectsResult, promptsResult)
 
-        availableProviders = providers
+        availableProviders = providersResult
         projects = projs
         allPrompts = prompts
 
-        if selectedProviderID == nil {
-            selectedProviderID = providers.first?.providerID
-        }
-        if selectedModelID == nil {
-            selectedModelID = currentProvider?.availableModels.first?.id
-        }
+        refreshModelOptions()
         if selectedProjectID == nil, let first = projs.first {
             selectedProjectID = first.id
             await loadProjectDependencies(projectID: first.id)
@@ -204,18 +249,18 @@ final class GenerationViewModel {
         await loadProjectDependencies(projectID: projectID)
     }
 
-    func providerSelectionChanged() {
-        guard let provider = currentProvider else { return }
-        if provider.availableModels.first(where: { $0.id == selectedModelID }) == nil {
-            selectedModelID = provider.availableModels.first?.id
-        }
+    /// "Specific model…" picked: offer the list as it stands now (the OpenRouter list may have loaded since launch).
+    func tierChoiceChanged() {
+        guard tierChoice == .specific else { return }
+        refreshModelOptions()
+        if specificModelRef == nil { specificModelRef = modelOptions.first?.reference }
     }
 
     private func loadProjectDependencies(projectID: String) async {
-        if let project = projects.first(where: { $0.id == projectID }) {
-            if let pid = project.defaultProviderID { selectedProviderID = pid }
-            // A default that points at a retired model moves to its replacement.
-            if let mid = project.defaultModelID { selectedModelID = CatalogueStore.shared.liveModelID(for: mid) }
+        if let project = projects.first(where: { $0.id == projectID }),
+           let pid = project.defaultProviderID, let mid = project.defaultModelID {
+            // A project default names a model; a default that points at a retired one moves to its replacement.
+            selectSpecific(provider: pid, modelID: mid)
         }
 
         async let refsResult = (try? database.fetchActiveReferenceEntries(projectID: projectID)) ?? []
@@ -230,38 +275,31 @@ final class GenerationViewModel {
     // MARK: - Generation
 
     func generate() async {
-        guard canGenerate, let provider = currentProvider else { return }
+        guard canGenerate, let selection else { return }
 
         isGenerating = true
         generationError = nil
         generatedImage = nil
         preparedGeneration = nil
+        pendingGenerated = nil
 
         do {
-            // Resolve once and gate before any provider call. Confirm records from this
-            // resolution and never resolves again.
-            let prepared = try prepareCurrent()
-            let model = prepared.resolution.imageModel
-
-            let refs: [ReferenceInput]?
-            if !confirmedReferenceIDs.isEmpty && provider.supportsReferenceImages {
-                refs = await buildReferenceInputs()
-            } else {
-                refs = nil
-            }
-
-            let params = GenerationParams(
-                prompt: promptText.trimmingCharacters(in: .whitespacesAndNewlines),
-                negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
-                model: model,
-                aspectRatio: aspectRatio,
-                width: resolvedWidth,
-                height: resolvedHeight,
-                budget: prepared.budget
-            )
-
-            generatedImage = try await provider.generate(params, references: refs)
-            preparedGeneration = prepared
+            // The same Core path as the MCP: the planner resolves once and gates before any provider
+            // call (asking OpenRouter a price first where an explicit model needs one), and the
+            // service walks the routes with fallback. Confirm records from this and never resolves again.
+            let prompt = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let references = await buildReferences()
+            let run = try await PanelGeneration.run(
+                selection: selection, referenceCount: confirmedReferenceIDs.count, aspectRatio: apiRatio,
+                prompt: prompt, negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
+                shape: aspectRatio, width: resolvedWidth, height: resolvedHeight, references: references,
+                providers: availableProviders, database: database, libraryURL: libraryURL,
+                catalogue: { CatalogueStore.shared.snapshot() }, live: .shared)
+            pendingPrompt = prompt
+            pendingReferences = references
+            pendingGenerated = run.generated
+            generatedImage = run.generated.image
+            preparedGeneration = run.prepared
         } catch {
             generationError = error.localizedDescription
         }
@@ -269,94 +307,48 @@ final class GenerationViewModel {
         isGenerating = false
     }
 
-    private func buildReferenceInputs() async -> [ReferenceInput] {
+    /// The service the MCP builds, over the providers this panel has: every route's provider is
+    /// reachable, so a fallback to another provider works.
+    private func service(for prepared: PreparedGeneration) throws -> GenerationService {
+        try PanelGeneration.service(
+            for: prepared, providers: availableProviders, database: database, libraryURL: libraryURL, live: .shared)
+    }
+
+    private func buildReferences() async -> [GenerationReference] {
         let entries = referenceEntries.filter { confirmedReferenceIDs.contains($0.id) }
-        var inputs: [ReferenceInput] = []
+        var references: [GenerationReference] = []
         for entry in entries {
             guard let asset = try? await database.fetchAsset(id: entry.assetID) else { continue }
             let fileURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
             guard let data = try? Data(contentsOf: fileURL) else { continue }
             let role: ReferenceRole = entry.role == "style_anchor" ? .styleAnchor : .subjectAnchor
-            inputs.append(ReferenceInput(
-                assetID: entry.assetID,
-                imageData: data,
-                role: role,
-                weight: Float(entry.weight)
+            references.append(GenerationReference(
+                input: ReferenceInput(assetID: entry.assetID, imageData: data, role: role, weight: Float(entry.weight)),
+                referenceSetID: entry.referenceSetID,
+                referenceEntryID: entry.id
             ))
         }
-        return inputs
+        return references
     }
 
     // MARK: - Confirm / Discard
 
     func confirmGeneration() async throws {
-        guard let result = generatedImage, let prepared = preparedGeneration else { return }
-        // What was generated, not what the panel would resolve now.
-        let recorded = prepared.recording(result)
+        guard let generated = pendingGenerated, let prepared = preparedGeneration else { return }
 
-        let assetID = UUID().uuidString
-        let filename = "\(assetID).\(result.format)"
+        // The one place bytes become a library asset, as for the MCP: Core's service sniffs the
+        // content (a label the bytes contradict is refused, and the charge is still recorded),
+        // stores what the serving model and provider were, and writes the asset, spend, tags,
+        // references and variant rows. Nothing here resolves again.
+        let request = prepared.request(
+            prompt: pendingPrompt, negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
+            aspectRatio: aspectRatio, width: resolvedWidth, height: resolvedHeight,
+            references: pendingReferences, projectIDs: allSelectedProjectIDs,
+            tags: pendingTags, variantFamilyName: selectedVariantFamilyName)
+        let outcome = try await service(for: prepared).record(generated, for: request)
+        let assetID = outcome.assetID
         let assetsDir = libraryURL.appending(path: "assets")
-        let fileURL = assetsDir.appending(path: filename)
-
-        let imageData = result.data
-        try imageData.write(to: fileURL)
-
         let now = ISO8601DateFormatter().string(from: Date())
-        let asset = Asset(
-            id: assetID,
-            filename: filename,
-            fileHash: imageData.sha256,
-            projectID: selectedProjectID,
-            providerID: prepared.resolution.provider,
-            modelID: recorded.modelID,
-            prompt: promptText,
-            negativePrompt: negativePromptText.isEmpty ? nil : negativePromptText,
-            width: resolvedWidth,
-            height: resolvedHeight,
-            aspectRatio: aspectRatio.rawValue,
-            estimatedCost: Double(truncating: recorded.estimatedCostGBP as NSDecimalNumber),
-            actualCost: result.actualCost.map { Double(truncating: $0 as NSDecimalNumber) },
-            createdAt: now
-        )
-        try await database.insertAsset(asset)
-
-        let projectIDs = allSelectedProjectIDs
-        if !projectIDs.isEmpty {
-            try await database.setProjectsForAsset(assetID: assetID, projectIDs: projectIDs)
-        }
-
-        try await database.insertSpendLog(SpendLog(
-            assetID: assetID,
-            providerID: prepared.resolution.provider,
-            estimatedCost: asset.estimatedCost,
-            actualCost: asset.actualCost,
-            timestamp: now
-        ))
-
-        for name in pendingTags.map({ $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }) {
-            let tag = try await database.findOrCreateTag(name: name)
-            try await database.attachTag(tagID: tag.id, assetID: assetID)
-        }
-
-        for entry in referenceEntries.filter({ confirmedReferenceIDs.contains($0.id) }) {
-            try await database.insertAssetReference(AssetReference(
-                assetID: assetID,
-                referenceSetID: entry.referenceSetID,
-                referenceEntryID: entry.id,
-                roleUsed: entry.role,
-                weightUsed: entry.weight,
-                passedToAPI: true
-            ))
-        }
-
-        try await database.attachToVariantFamily(
-            assetID: assetID,
-            projectID: selectedProjectID,
-            familyName: selectedVariantFamilyName,
-            prompt: promptText,
-            filename: asset.filename
-        )
 
         if saveToPromptLibrary {
             let title = promptLibraryTitle.trimmingCharacters(in: .whitespaces)
@@ -390,6 +382,7 @@ final class GenerationViewModel {
 
     func discardGeneration() {
         generatedImage = nil
+        pendingGenerated = nil
         generationError = nil
         resetPostGeneration()
     }
@@ -412,6 +405,8 @@ final class GenerationViewModel {
 
     private func resetPostGeneration() {
         generatedImage = nil
+        pendingGenerated = nil
+        pendingReferences = []
         preparedGeneration = nil
         pendingTags = []
         tagInputText = ""

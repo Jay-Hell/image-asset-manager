@@ -21,7 +21,7 @@ enum ORFixture {
     static let modelCount = 61
 }
 
-private func okBody(cost: Double? = 0.0336, mime: String? = nil, bytes: String = tinyPNGBase64) -> Data {
+func okBody(cost: Double? = 0.0336, mime: String? = nil, bytes: String = tinyPNGBase64) -> Data {
     var item: [String: Any] = ["b64_json": bytes]
     if let mime { item["media_type"] = mime }
     var root: [String: Any] = ["data": [item]]
@@ -42,7 +42,7 @@ private final class CallCounter: @unchecked Sendable {
 
 private let svgBytes = Data(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="white"/></svg>"#.utf8)
 
-private struct ORRig {
+struct ORRig {
     let list: StubSession
     let live: OpenRouterModelStore
     let remote: StubSession
@@ -980,6 +980,34 @@ struct RouteExecutorTests {
         let (cheap, cheapList, cheapOR) = try await executor(openRouterUSD: 0.0336)
         _ = try await cheap.generate(routes: cheapList, base: base(cheapList[0], budget: budget), references: nil)
         #expect(cheapOR.script.count == 1)
+    }
+
+    @Test func aFallbackRouteIsCheckedAgainstTheCapLessWhatTheBatchHasAlreadySpent() async throws {
+        let rig = try await ORRig.make()
+        let catalogue = try RepoCatalogue.parsed { root in
+            setTierRoutes(&root, tier: "fast", [
+                ["provider": "nano_banana", "model": "gemini-3.1-flash-lite-image", "usdEstimate": 0.0336],
+                ["provider": "openrouter", "model": "google/gemini-3.1-flash-lite-image", "usdEstimate": 0.0336],
+            ])
+        }
+        let list = try routes(catalogue: catalogue, rig: rig)
+        let limits = GenerationPolicy.BudgetLimits(maxImages: 5, maxCostGBP: Decimal(string: "0.50")!)
+        // The fallback costs 0.0336 x 0.79 = £0.026544. With £0.48 spent only £0.02 of the cap is left.
+        let or = ScriptedProvider(providerID: "openrouter", failure: nil)
+        let executor = RouteExecutor(providers: [ScriptedProvider(providerID: "nano_banana", failure: .modelUnavailable("x")), or])
+        let spent = GenerationPolicy.BudgetContext(count: 1, limits: limits, spentGBP: Decimal(string: "0.48")!)
+        do {
+            _ = try await executor.generate(routes: list, base: base(list[0], budget: spent), references: nil)
+            Issue.record("the fallback should not fit the cap that is left")
+        } catch GenerationPolicy.BudgetViolation.tooCostly(let subtotal, let max) {
+            #expect(max == Decimal(string: "0.02")!)             // the cap less what was spent
+            #expect(abs(Double(truncating: subtotal as NSDecimalNumber) - 0.026544) < 1e-9)
+        }
+        #expect(or.script.count == 0)                           // nothing was sent
+        // The pair: the same fallback with £0.10 spent fits the £0.40 left and goes ahead.
+        let some = GenerationPolicy.BudgetContext(count: 1, limits: limits, spentGBP: Decimal(string: "0.10")!)
+        _ = try await executor.generate(routes: list, base: base(list[0], budget: some), references: nil)
+        #expect(or.script.count == 1)
     }
 
     @Test func aNotFoundOnOpenRouterAsksForOneLiveListRefresh() async throws {

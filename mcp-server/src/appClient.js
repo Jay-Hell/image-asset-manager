@@ -40,8 +40,13 @@ function readToken() {
 // images was never going to finish inside 8 seconds.
 const TOOL_TIMEOUTS_MS = {
   upload_asset: 180_000,
+  generate: 300_000,
   generate_image: 300_000,
+  // May fetch OpenRouter's model list on demand (20 s) before it answers.
+  list_generation_options: 60_000,
 };
+
+export { TOOL_TIMEOUTS_MS };
 
 export async function isAppRunning() {
   try {

@@ -43,7 +43,18 @@ function loadIndex(libraryPath) {
   return JSON.parse(fs.readFileSync(indexPath, 'utf8')).map(withMediaType);
 }
 
+// Tools that cannot work from index.json. Checked before the index is read, so the reason given is
+// the real one (the app is not running), not "index.json not found".
+const APP_ONLY_MESSAGES = {
+  generate: 'Generating needs the Image Asset Manager app: it holds the provider keys and writes the library. Start the app and try again.',
+  generate_image: 'Generating needs the Image Asset Manager app: it holds the provider keys and writes the library. Start the app and try again.',
+  list_generation_options: 'What can be generated, and at what cost, is known only to the running Image Asset Manager app (it holds the provider keys and the live model list). Start the app and try again.',
+};
+
 export function callFallbackTool(name, args, libraryPath) {
+  if (Object.hasOwn(APP_ONLY_MESSAGES, name)) {
+    throw new Error(`Tool '${name}' is not available in offline mode. ${APP_ONLY_MESSAGES[name]}`);
+  }
   const assets = loadIndex(libraryPath);
 
   switch (name) {

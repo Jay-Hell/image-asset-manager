@@ -30,8 +30,8 @@ struct GenerationPanelView: View {
         .onChange(of: viewModel.selectedProjectID) { _, _ in
             Task { await viewModel.projectSelectionChanged() }
         }
-        .onChange(of: viewModel.selectedProviderID) { _, _ in
-            viewModel.providerSelectionChanged()
+        .onChange(of: viewModel.tierChoice) { _, _ in
+            viewModel.tierChoiceChanged()
         }
         .sheet(isPresented: $showPromptPicker) {
             PromptLibraryPickerView(viewModel: viewModel)
@@ -69,7 +69,7 @@ struct GenerationPanelView: View {
                     Divider().overlay(Color.appBorder)
 
                     if !viewModel.referenceEntries.isEmpty,
-                       viewModel.currentProvider?.supportsReferenceImages == true {
+                       viewModel.canAttachReferences {
                         ReferencePanelView(viewModel: viewModel)
                         Divider().overlay(Color.appBorder)
                     }
@@ -154,15 +154,15 @@ struct GenerationPanelView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // Provider
+                // Tier: the app picks the provider and model, with a fallback
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("PROVIDER")
+                    Text("QUALITY")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.appTextSecondary)
                         .kerning(0.5)
-                    Picker("Provider", selection: $viewModel.selectedProviderID) {
-                        ForEach(viewModel.availableProviders, id: \.providerID) { p in
-                            Text(p.displayName).tag(p.providerID as String?)
+                    Picker("Quality", selection: $viewModel.tierChoice) {
+                        ForEach(GenerationViewModel.TierChoice.allCases) { choice in
+                            Text(choice.label).tag(choice)
                         }
                     }
                     .labelsHidden()
@@ -171,24 +171,37 @@ struct GenerationPanelView: View {
                     .font(.system(size: 13))
                 }
 
-                // Model
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("MODEL")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.appTextSecondary)
-                        .kerning(0.5)
-                    Picker("Model", selection: $viewModel.selectedModelID) {
-                        ForEach(viewModel.currentProvider?.availableModels ?? [], id: \.id) { model in
-                            Text(model.displayName).tag(model.id as String?)
+                // A named model: catalogue models and the OpenRouter list, by provider, with estimates
+                if viewModel.tierChoice == .specific {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("MODEL")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.appTextSecondary)
+                            .kerning(0.5)
+                        Picker("Model", selection: $viewModel.specificModelRef) {
+                            ForEach(viewModel.modelGroups, id: \.provider) { group in
+                                Section(group.name) {
+                                    ForEach(group.options, id: \.reference) { option in
+                                        Text("\(option.displayName) · ~\(Self.price(option.estimateGBP))")
+                                            .tag(option.reference as String?)
+                                    }
+                                }
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .tint(Color.appTextPrimary)
+                        .font(.system(size: 13))
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .tint(Color.appTextPrimary)
-                    .font(.system(size: 13))
                 }
             }
 
+            // What the next generation will use, and why if that is not the first choice
+            if let summary = viewModel.resolvedSummary {
+                Text("Will use \(summary)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.appTextSecondary)
+            }
             if let note = viewModel.modelRouteNote {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.triangle.branch")
@@ -381,7 +394,24 @@ struct GenerationPanelView: View {
 
     // MARK: - Generation Footer
 
+    private static func price(_ gbp: Decimal) -> String {
+        String(format: "£%.3f", Double(truncating: gbp as NSDecimalNumber))
+    }
+
     private var generationFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // The provider's message in full, wrapped and selectable, above the buttons.
+            if let error = viewModel.generationError {
+                ErrorMessageText(message: error, size: 11)
+            }
+            footerControls
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+    }
+
+    private var footerControls: some View {
         HStack {
             // Cost estimate pill
             if viewModel.estimatedCost > 0 {
@@ -394,14 +424,6 @@ struct GenerationPanelView: View {
             }
 
             Spacer()
-
-            // Error message
-            if let error = viewModel.generationError {
-                Text(error)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-            }
 
             Button {
                 Task { await viewModel.generate() }
@@ -425,9 +447,6 @@ struct GenerationPanelView: View {
             .disabled(!viewModel.canGenerate)
             .keyboardShortcut(.return, modifiers: .command)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color.appSurface)
     }
 
     // MARK: - Refinement helpers
@@ -449,7 +468,7 @@ struct GenerationPanelView: View {
             activeReferences: refs,
             similarPrompts: [],
             aspectRatio: viewModel.aspectRatio.rawValue,
-            modelName: viewModel.currentModel?.displayName ?? "Unknown"
+            modelName: viewModel.effectiveModel?.displayName ?? "Unknown"
         )
         let session = PromptRefinementSession(draft: viewModel.promptText, context: context)
         refinementSession = session

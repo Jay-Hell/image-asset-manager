@@ -70,6 +70,25 @@ public enum EstimateSource: String, Sendable, Equatable {
 public struct OpenRouterPrice: Sendable, Equatable, Codable {
     public let usdPerImage: Decimal
     public let source: String   // EstimateSource raw value; kept a string so the cache file stays plain
+
+    /// No learnt price may fall below this per image: a bad observation (a zero, a rounding
+    /// artefact) must not let a request slip under the spending gate. $0.005 is 40 times below the
+    /// $0.20 gate for an unknown price; $0.001 left one bad cost 200 times below it.
+    public static let minimumUSDPerImage = Decimal(string: "0.005")!
+
+    public init(usdPerImage: Decimal, source: String) {
+        self.usdPerImage = max(usdPerImage, Self.minimumUSDPerImage)
+        self.source = source
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(usdPerImage: try c.decode(Decimal.self, forKey: .usdPerImage), source: try c.decode(String.self, forKey: .source))
+    }
+
+    /// Learnt prices are keyed by model and size: what a 1K image cost says nothing about a 4K one.
+    /// A price with no size is a model-level listing (the `/endpoints` record).
+    public static func key(model: String, size: String?) -> String { "\(model)|\(size ?? "")" }
 }
 
 /// A snapshot of the live list and of the prices learnt for it.
@@ -86,6 +105,15 @@ public struct OpenRouterModels: Sendable, Equatable {
 
     public var isEmpty: Bool { models.isEmpty }
     public func model(_ id: String) -> OpenRouterModel? { models.first { $0.id == id } }
+
+    /// The learnt price for this model at this size. An observed cost counts only for its own
+    /// size; the model-level endpoint listing serves any size.
+    public func learntPrice(model: String, size: String?) -> OpenRouterPrice? {
+        if let exact = prices[OpenRouterPrice.key(model: model, size: size)] { return exact }
+        guard size != nil, let listed = prices[OpenRouterPrice.key(model: model, size: nil)],
+              listed.source == EstimateSource.endpointPricing.rawValue else { return nil }
+        return listed
+    }
 
     public enum ParseError: Error, Equatable, LocalizedError {
         case tooLarge(Int)

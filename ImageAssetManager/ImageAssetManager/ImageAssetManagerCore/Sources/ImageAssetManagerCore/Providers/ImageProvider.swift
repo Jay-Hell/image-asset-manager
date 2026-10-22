@@ -90,13 +90,18 @@ public struct GenerationParams: @unchecked Sendable {
     public let budget: GenerationPolicy.BudgetContext?
     /// The `output_format` the resolver chose (OpenRouter models that list one; `svg` for vector).
     public let outputFormat: String?
+    /// An exact ratio such as `4:3` the caller asked for, when `aspectRatio` (one of three, or custom) cannot say it.
+    public let ratio: String?
+
+    /// The ratio string the provider API takes: the exact ratio if one was asked for.
+    public var apiRatio: String { ratio ?? aspectRatio.apiRatio(width: width, height: height) }
 
     /// The same request aimed at another route's model.
     public func retargeted(to model: ImageModel, outputFormat: String?) -> GenerationParams {
         GenerationParams(
             prompt: prompt, negativePrompt: negativePrompt, model: model, aspectRatio: aspectRatio,
             width: width, height: height, seed: seed, additionalParams: additionalParams,
-            budget: budget, outputFormat: outputFormat
+            budget: budget, outputFormat: outputFormat, ratio: ratio
         )
     }
 
@@ -110,8 +115,10 @@ public struct GenerationParams: @unchecked Sendable {
         seed: String? = nil,
         additionalParams: [String: Any] = [:],
         budget: GenerationPolicy.BudgetContext? = nil,
-        outputFormat: String? = nil
+        outputFormat: String? = nil,
+        ratio: String? = nil
     ) {
+        self.ratio = ratio
         self.outputFormat = outputFormat
         self.budget = budget
         self.prompt = prompt

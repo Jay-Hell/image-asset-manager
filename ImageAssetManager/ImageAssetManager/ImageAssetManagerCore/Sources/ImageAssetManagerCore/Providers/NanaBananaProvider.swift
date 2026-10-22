@@ -105,7 +105,7 @@ public struct NanaBananaProvider: ImageProvider {
         do {
             resolution = try ModelResolver.resolveSelection(
                 provider: providerID, modelID: params.model.id, referenceCount: references?.count ?? 0,
-                aspectRatio: params.aspectRatio.apiRatio(width: params.width, height: params.height),
+                aspectRatio: params.apiRatio,
                 catalogue: snapshot, providers: [providerID]
             )
         } catch {
@@ -115,12 +115,13 @@ public struct NanaBananaProvider: ImageProvider {
         let changed = model.id != params.model.id || model.imageSize != params.model.imageSize
             || model.costPerImage != params.model.costPerImage
         if changed, let budget = params.budget {
-            _ = try GenerationPolicy.checkBudget(count: budget.count, unitCost: model.costPerImage, limits: budget.limits)
+            _ = try GenerationPolicy.checkBudget(count: budget.count, unitCost: model.costPerImage, limits: budget.remainingLimits)
         }
         let next = GenerationParams(
             prompt: params.prompt, negativePrompt: params.negativePrompt, model: model,
             aspectRatio: params.aspectRatio, width: params.width, height: params.height,
-            seed: params.seed, additionalParams: params.additionalParams, budget: params.budget
+            seed: params.seed, additionalParams: params.additionalParams, budget: params.budget,
+            ratio: params.ratio
         )
         return (next, changed)
     }
@@ -133,7 +134,7 @@ public struct NanaBananaProvider: ImageProvider {
         }
 
         let request = try Self.urlRequest(entry: entry, params: params, references: references, apiKey: apiKey)
-        let data = try await send(request, modelID: entry.id, using: session)
+        let data = try await send(request, modelID: entry.id, apiKey: apiKey, using: session)
         let image = try Self.parseResponse(data, usdToGBP: snapshot.fx)
         guard resolved.changed else { return image }
         return GeneratedImage(
@@ -178,7 +179,7 @@ public struct NanaBananaProvider: ImageProvider {
         }
 
         var imageConfig: [String: Any] = [
-            "aspectRatio": params.aspectRatio.apiRatio(width: params.width, height: params.height),
+            "aspectRatio": params.apiRatio,
         ]
         if let size = params.model.imageSize { imageConfig["imageSize"] = size }
 
@@ -246,7 +247,7 @@ public struct NanaBananaProvider: ImageProvider {
 
     // MARK: - HTTP
 
-    private func send(_ request: URLRequest, modelID: String, using session: URLSession) async throws -> Data {
+    private func send(_ request: URLRequest, modelID: String, apiKey: String, using session: URLSession) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.invalidResponse
@@ -262,18 +263,13 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.rateLimited
         case 400:
             // Google also answers 400 for a malformed key; its own message says which.
-            throw ProviderError.badRequest(Self.providerMessage(data) ?? "HTTP 400")
+            throw ProviderError.badRequest(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP 400")
         default:
-            throw ProviderError.generationFailed(Self.providerMessage(data) ?? "HTTP \(http.statusCode)")
+            throw ProviderError.generationFailed(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP \(http.statusCode)")
         }
     }
 
-    private static func providerMessage(_ data: Data) -> String? {
-        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let message = (json["error"] as? [String: Any])?["message"] as? String, !message.isEmpty {
-            return message
-        }
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text?.isEmpty ?? true) ? nil : text
+    private static func providerMessage(_ data: Data, apiKey: String) -> String? {
+        ProviderMessage.text(from: data, redacting: [apiKey])
     }
 }

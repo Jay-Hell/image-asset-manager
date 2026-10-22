@@ -307,8 +307,8 @@ actor MCPServer {
                 "host": receipt.host,
             ] as [String: Any]
 
-        case "generate_image":
-            return try await handleGenerateImage(args: args)
+        case "generate", "generate_image", "list_generation_options":
+            return try await handleGenerationTool(name: name, args: args)
 
         default:
             throw MCPToolError.unknownTool(name)

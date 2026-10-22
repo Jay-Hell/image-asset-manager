@@ -101,13 +101,22 @@ public struct OpenRouterProvider: ImageProvider {
         case 429:
             throw ProviderError.rateLimited
         case 400:
-            throw ProviderError.badRequest(Self.providerMessage(data) ?? "HTTP 400")
+            throw ProviderError.badRequest(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP 400")
         default:
-            throw ProviderError.generationFailed(Self.providerMessage(data) ?? "HTTP \(http.statusCode)")
+            throw ProviderError.generationFailed(Self.providerMessage(data, apiKey: apiKey) ?? "HTTP \(http.statusCode)")
         }
         let fx = catalogue.snapshot().fx
-        let image = try Self.parseResponse(data, usdToGBP: fx)
-        if let usd = Self.costUSD(in: data) { live.recordObservedCost(usd: usd, for: params.model.id) }
+        let image: GeneratedImage
+        do {
+            image = try Self.parseResponse(data, usdToGBP: fx)
+        } catch ProviderError.invalidResponse {
+            // A 200 that carries a cost but no image is still a charge: say so, so it is recorded.
+            if let usd = Self.costUSD(in: data) {
+                throw ProviderError.chargedNoImage(provider: providerID, model: params.model.id, costGBP: usd * fx)
+            }
+            throw ProviderError.invalidResponse
+        }
+        if let usd = Self.costUSD(in: data) { live.recordObservedCost(usd: usd, for: params.model.id, size: params.model.imageSize) }
         return image
     }
 
@@ -138,7 +147,7 @@ public struct OpenRouterProvider: ImageProvider {
 
         let ratios = record.values(of: "aspect_ratio")
         if !ratios.isEmpty {
-            let ratio = params.aspectRatio.apiRatio(width: params.width, height: params.height)
+            let ratio = params.apiRatio
             guard ratios.contains(ratio) else {
                 throw ResolveError.unsupportedAspectRatio(requested: ratio, supported: ratios)
             }
@@ -198,13 +207,8 @@ public struct OpenRouterProvider: ImageProvider {
         return Catalogue.decimal(raw.doubleValue)
     }
 
-    private static func providerMessage(_ data: Data) -> String? {
-        if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-            if let message = (json["error"] as? [String: Any])?["message"] as? String, !message.isEmpty { return message }
-            if let message = json["message"] as? String, !message.isEmpty { return message }
-        }
-        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text?.isEmpty ?? true) ? nil : String(text!.prefix(300))
+    private static func providerMessage(_ data: Data, apiKey: String) -> String? {
+        ProviderMessage.text(from: data, redacting: [apiKey])
     }
 }
 

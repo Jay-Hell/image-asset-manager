@@ -77,7 +77,7 @@ public actor AnthropicClient: AnthropicClientProtocol {
         }
         guard http.statusCode == 200 else {
             if http.statusCode == 404 { throw AnthropicError.modelUnavailable(refinement.model) }
-            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            let message = ProviderMessage.text(from: data, redacting: [apiKey]) ?? "Unknown error"
             throw AnthropicError.apiError(statusCode: http.statusCode, message: message)
         }
         return try Self.parse(data, requestedModel: refinement.model)

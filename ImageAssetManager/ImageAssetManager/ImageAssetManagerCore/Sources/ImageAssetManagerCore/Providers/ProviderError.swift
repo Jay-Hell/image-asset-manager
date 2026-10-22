@@ -13,6 +13,8 @@ public enum ProviderError: Error, Sendable {
     case generationFailed(String)
     case networkError(String)
     case invalidResponse
+    /// A 200 that reported a cost but carried no image. The charge is real; `GenerationService` records it.
+    case chargedNoImage(provider: String, model: String, costGBP: Decimal)
 }
 
 extension ProviderError: LocalizedError {
@@ -27,6 +29,7 @@ extension ProviderError: LocalizedError {
         case .generationFailed(let msg): return "Generation failed: \(msg)"
         case .networkError(let msg): return "Network error: \(msg)"
         case .invalidResponse:      return "Unexpected response from the provider API."
+        case .chargedNoImage(let provider, let model, _): return "\(provider) charged for \(model) but returned no image."
         }
     }
 }

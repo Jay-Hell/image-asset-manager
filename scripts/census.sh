@@ -9,6 +9,7 @@
 #   2. App tests, macOS              (xcodebuild test)
 #   3. App build, iPad simulator     (xcodebuild build)
 #   4. node --check on mcp-server/src/*.js
+#   5. node --test on mcp-server/test/*.test.js    (MIN_NODE=n)
 #
 # It fails on any failure. It also fails if a test run reports zero tests, or if the
 # Core or app count is lower than MIN_CORE / MIN_APP (so a suite that silently stops running is a
@@ -21,8 +22,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 MIN_TESTS="${MIN_TESTS:-0}"
 # Separate floors for the two suites; the defaults are the counts at the last green census.
-MIN_CORE="${MIN_CORE:-268}"
+MIN_CORE="${MIN_CORE:-317}"
 MIN_APP="${MIN_APP:-1}"
+MIN_NODE="${MIN_NODE:-11}"
 # A generic simulator destination: no named device to go missing when Xcode updates its list.
 IPAD="${IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 PROJECT="$ROOT/ImageAssetManager/ImageAssetManager.xcodeproj"
@@ -73,6 +75,17 @@ for f in "$ROOT"/mcp-server/src/*.js; do
 done
 [ "$NODE_FILES" -gt 0 ] || fail "no mcp-server/src/*.js files found to check"
 echo "checked $NODE_FILES files"
+
+# 5. MCP proxy tests (tools.js and fallback.js). The count is read from the runner's own summary.
+step "node --test"
+node --test "$ROOT"/mcp-server/test/*.test.js >"$LOGS/node.log" 2>&1
+NODE_STATUS=$?
+NODE_COUNT="$(grep -E '^ℹ tests [0-9]+' "$LOGS/node.log" | grep -Eo '[0-9]+' | tail -1)"
+NODE_COUNT="${NODE_COUNT:-0}"
+echo "node tests reported: $NODE_COUNT (exit $NODE_STATUS)"
+[ "$NODE_STATUS" -eq 0 ] || fail "node tests failed (log: $LOGS/node.log)"
+[ "$NODE_COUNT" -gt 0 ] || fail "node tests reported zero tests"
+[ "$NODE_COUNT" -ge "$MIN_NODE" ] || fail "node count $NODE_COUNT is lower than MIN_NODE $MIN_NODE"
 
 # Totals.
 TOTAL=$((CORE_COUNT + APP_COUNT))

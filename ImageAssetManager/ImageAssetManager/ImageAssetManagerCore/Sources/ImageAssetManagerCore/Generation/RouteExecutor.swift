@@ -36,7 +36,7 @@ public struct RouteExecutor: Sendable {
             let route = routes[index]
             let params = base.retargeted(to: route.imageModel, outputFormat: route.outputFormat)
             if index > 0, let budget = base.budget {
-                _ = try GenerationPolicy.checkBudget(count: budget.count, unitCost: route.estimateGBP, limits: budget.limits)
+                _ = try GenerationPolicy.checkBudget(count: budget.count, unitCost: route.estimateGBP, limits: budget.remainingLimits)
             }
             guard let provider = providers[route.provider] else {
                 // A route whose provider is not registered is "no key" in effect.

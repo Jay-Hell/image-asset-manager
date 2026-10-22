@@ -407,7 +407,7 @@ public enum ModelResolver {
         } else if let priced = route?.usdEstimate ?? model.usdEstimate {
             usd = priced
             source = .catalogue
-        } else if isOpenRouter, let learnt = live.prices[model.id] {
+        } else if isOpenRouter, let learnt = live.learntPrice(model: model.id, size: imageSize) {
             usd = learnt.usdPerImage
             source = EstimateSource(rawValue: learnt.source) ?? .endpointPricing
         } else {

@@ -283,7 +283,8 @@ extension AppDatabase {
         return try await read { db in
             let row = try Row.fetchOne(db, sql: sql, arguments: capturedArgs)
             let total = (row?["total_estimated"] as? Double) ?? 0
-            let count = (row?["generation_count"] as? Int) ?? 0
+            // INTEGER columns come back as Int64; a bare `as? Int` is always nil.
+            let count = (row?["generation_count"] as Int?) ?? 0
             return SpendSummary(
                 totalEstimated: total,
                 totalActual: (row?["total_actual"] as? Double) ?? 0,

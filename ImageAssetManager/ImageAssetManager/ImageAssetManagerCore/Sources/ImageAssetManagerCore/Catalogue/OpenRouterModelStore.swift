@@ -62,7 +62,9 @@ public final class OpenRouterModelStore: @unchecked Sendable {
     private static func readPrices(_ url: URL) -> [String: OpenRouterPrice] {
         guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([String: OpenRouterPrice].self, from: data) else { return [:] }
-        return decoded
+        // A file written before prices were keyed by size holds bare model IDs: those are model-level.
+        return Dictionary(decoded.map { ($0.key.contains("|") ? $0.key : OpenRouterPrice.key(model: $0.key, size: nil), $0.value) },
+                          uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: - Reading
@@ -131,22 +133,24 @@ public final class OpenRouterModelStore: @unchecked Sendable {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let usd = OpenRouterModels.perImageUSD(fromEndpoints: data) else { return nil }
         // An observed cost is better evidence than a listing: do not overwrite it.
-        if let held = snapshot().prices[modelID], held.source == EstimateSource.observedCost.rawValue { return held }
+        if let held = snapshot().prices[OpenRouterPrice.key(model: modelID, size: nil)],
+           held.source == EstimateSource.observedCost.rawValue { return held }
         let price = OpenRouterPrice(usdPerImage: usd, source: EstimateSource.endpointPricing.rawValue)
-        setPrice(price, for: modelID)
+        setPrice(price, for: modelID, size: nil)
         return price
     }
 
-    /// The first real `usage.cost` for a model replaces an unknown price; later ones update it.
-    public func recordObservedCost(usd: Decimal, for modelID: String) {
+    /// The first real `usage.cost` for a model at a size replaces an unknown price; later ones
+    /// update it. It is kept for that size only, and never below `OpenRouterPrice.minimumUSDPerImage`.
+    public func recordObservedCost(usd: Decimal, for modelID: String, size: String? = nil) {
         guard usd > 0 else { return }
-        setPrice(OpenRouterPrice(usdPerImage: usd, source: EstimateSource.observedCost.rawValue), for: modelID)
+        setPrice(OpenRouterPrice(usdPerImage: usd, source: EstimateSource.observedCost.rawValue), for: modelID, size: size)
     }
 
-    private func setPrice(_ price: OpenRouterPrice, for modelID: String) {
+    private func setPrice(_ price: OpenRouterPrice, for modelID: String, size: String?) {
         let prices: [String: OpenRouterPrice] = locked {
             var p = current.prices
-            p[modelID] = price
+            p[OpenRouterPrice.key(model: modelID, size: size)] = price
             current = OpenRouterModels(models: current.models, prices: p)
             return p
         }
