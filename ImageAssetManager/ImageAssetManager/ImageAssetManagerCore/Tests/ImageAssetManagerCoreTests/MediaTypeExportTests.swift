@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 @testable import ImageAssetManagerCore
 
 @Suite("media_type out of the library")
@@ -47,16 +48,35 @@ struct MediaTypeExportTests {
         let (dir, db) = try library()
         try await db.write { db in
             try Asset(id: "s", filename: "s.svg", fileHash: "h", providerID: "p", modelID: "m", createdAt: "2026-10-22T00:00:00Z").insert(db)
+            // As App Store 1.0.x writes a row: media_type NULL, so only the fallback can name it.
+            try V7LibraryFixture.insertAsOldBuild(db, id: "old", filename: "old.JPG")
+            try db.execute(sql: """
+                INSERT INTO prompts (id, title, body, usage_count, created_at, updated_at)
+                VALUES ('pr', 'Logo', 'A logo', 0, '2026-10-22T00:00:00Z', '2026-10-22T00:00:00Z')
+                """)
+            try db.execute(sql: "INSERT INTO prompt_asset (prompt_id, asset_id) VALUES ('pr', 's'), ('pr', 'old')")
         }
+        let expected = ["s": "image/svg+xml", "old": "image/jpeg"]
+        let stored = try await db.read { db in
+            try String?.fetchOne(db, sql: "SELECT media_type FROM assets WHERE id = 'old'")
+        }
+        #expect(stored == .some(nil), "the old-build row must reach the MCP with no media_type of its own")
 
-        let detail = try #require(try await db.mcpGetAssetDetail(id: "s", libraryURL: dir))
-        let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(detail)) as? [String: Any])
-        let asset = try #require(json["asset"] as? [String: Any])
-        #expect(asset["media_type"] as? String == "image/svg+xml")
+        var fromDetail: [String: String] = [:]
+        for id in ["s", "old"] {
+            let detail = try #require(try await db.mcpGetAssetDetail(id: id, libraryURL: dir))
+            let json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(detail)) as? [String: Any])
+            let asset = try #require(json["asset"] as? [String: Any])
+            fromDetail[id] = asset["media_type"] as? String
+        }
+        #expect(fromDetail == expected)
 
         let found = try await db.mcpSearchAssets(query: nil, tags: nil, project: nil, provider: nil,
                                                  aspectRatio: nil, dateFrom: nil, dateTo: nil,
                                                  limit: 10, libraryURL: dir)
-        #expect(found.map(\.mediaType) == ["image/svg+xml"])
+        #expect(Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0.mediaType ?? "nil") }) == expected)
+
+        let prompt = try #require(try await db.mcpGetPrompt(id: "pr", libraryURL: dir))
+        #expect(Dictionary(uniqueKeysWithValues: prompt.linkedAssets.map { ($0.id, $0.mediaType ?? "nil") }) == expected)
     }
 }
