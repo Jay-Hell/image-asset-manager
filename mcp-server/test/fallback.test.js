@@ -7,6 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { callFallbackTool } from '../src/fallback.js';
+import { TOOL_TIMEOUTS_MS } from '../src/appClient.js';
 
 function libraryWith(records) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iam-fallback-'));
@@ -39,6 +40,25 @@ test('search_assets carries media_type on every known type and leaves the unknow
     'old-svg': 'image/svg+xml',
     'old-gif': undefined,
   });
+});
+
+test('the generation tools give a clear offline error, even when there is no index.json to read', () => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'iam-fallback-empty-'));   // no index.json here
+  for (const name of ['generate', 'generate_image', 'list_generation_options']) {
+    assert.throws(
+      () => callFallbackTool(name, { prompt: 'p' }, empty),
+      error => error.message.includes(`'${name}' is not available in offline mode`)
+        && error.message.includes('Start the app') && !error.message.includes('index.json')
+    );
+  }
+  // The pair: a read-only tool is not turned away this way (it reaches the index, and says what is missing).
+  assert.throws(() => callFallbackTool('search_assets', {}, empty), /index\.json not found/);
+});
+
+test('the generation tools have timeouts that outlast a database read', () => {
+  assert.equal(TOOL_TIMEOUTS_MS.generate, 300_000);
+  assert.equal(TOOL_TIMEOUTS_MS.generate_image, 300_000);
+  assert.ok(TOOL_TIMEOUTS_MS.list_generation_options > 8_000);
 });
 
 test('a stored media_type is never overridden by the extension', () => {
