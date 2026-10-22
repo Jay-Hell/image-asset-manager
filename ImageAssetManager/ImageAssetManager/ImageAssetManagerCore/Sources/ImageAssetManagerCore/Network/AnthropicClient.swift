@@ -14,10 +14,21 @@ public actor AnthropicClient: AnthropicClientProtocol {
     public static let defaultModel = "claude-sonnet-4-5"
 
     private static let apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
-    private static let keychainService = "com.yourapp.imageassetmanager"
-    private static let keychainAccount = "anthropic_api_key"
+    public static let keychainService = "com.yourapp.imageassetmanager"
+    public static let keychainAccount = "anthropic_api_key"
 
-    public init() {}
+    private let session: URLSession
+    private let apiKeyLookup: @Sendable () throws -> String
+
+    public init(
+        session: URLSession = .shared,
+        apiKey: @escaping @Sendable () throws -> String = {
+            try KeychainService.retrieve(service: AnthropicClient.keychainService, account: AnthropicClient.keychainAccount)
+        }
+    ) {
+        self.session = session
+        self.apiKeyLookup = apiKey
+    }
 
     public func complete(
         system: String,
@@ -28,10 +39,7 @@ public actor AnthropicClient: AnthropicClientProtocol {
     ) async throws -> String {
         let apiKey: String
         do {
-            apiKey = try KeychainService.retrieve(
-                service: AnthropicClient.keychainService,
-                account: AnthropicClient.keychainAccount
-            )
+            apiKey = try apiKeyLookup()
         } catch {
             throw AnthropicError.missingAPIKey
         }
@@ -52,7 +60,7 @@ public actor AnthropicClient: AnthropicClientProtocol {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = bodyData
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AnthropicError.invalidResponse
         }

@@ -45,7 +45,14 @@ public struct NanaBananaProvider: ImageProvider {
 
     public let supportedAspectRatios: [AspectRatio] = [.square, .landscape, .portrait, .custom]
 
-    public init() {}
+    private let apiKeyLookup: @Sendable () throws -> String
+
+    /// `apiKey` defaults to the Keychain; tests inject their own so they never touch the real key.
+    public init(apiKey: @escaping @Sendable () throws -> String = {
+        try KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)
+    }) {
+        self.apiKeyLookup = apiKey
+    }
 
     /// Only the Gemini model accepts reference images on this API; Imagen 4 tiers are text-only.
     public static func supportsReferences(modelID: String) -> Bool {
@@ -63,7 +70,7 @@ public struct NanaBananaProvider: ImageProvider {
     func generate(_ params: GenerationParams, references: [ReferenceInput]?, session: URLSession) async throws -> GeneratedImage {
         let apiKey: String
         do {
-            apiKey = try KeychainService.retrieve(service: Self.keychainService, account: Self.keychainAccount)
+            apiKey = try apiKeyLookup()
         } catch KeychainService.KeychainError.itemNotFound {
             throw ProviderError.apiKeyNotFound
         }

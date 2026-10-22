@@ -21,6 +21,10 @@ let package = Package(
             name: "ImageAssetManagerCore",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            resources: [
+                // The bundled catalogue; a test proves it is byte-identical to catalogue/v1/models.json.
+                .copy("Resources/models.json"),
             ]
         ),
         .testTarget(
