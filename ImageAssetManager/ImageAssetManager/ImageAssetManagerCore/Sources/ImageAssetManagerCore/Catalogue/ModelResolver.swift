@@ -260,7 +260,11 @@ public enum ModelResolver {
         }
 
         // Borrow the tier route's size and price for this model, if one lists it.
-        let route = catalogue.media[request.media]?.values.lazy.flatMap { $0 }
+        // Tiers are walked in catalogue order (fast, standard, pro, then any other by name) so
+        // a model on two tiers gets the same route on every launch, not dictionary order.
+        let tiers = catalogue.media[request.media] ?? [:]
+        let ordered = tierNames.filter { tiers[$0] != nil } + tiers.keys.filter { !tierNames.contains($0) }.sorted()
+        let route = ordered.lazy.compactMap { tiers[$0] }.flatMap { $0 }
             .first { $0.provider == provider && $0.model == id }
         return try build(model: model, route: route, tier: nil, request: request, catalogue: catalogue, note: nil, provider: provider)
     }

@@ -170,6 +170,43 @@ struct CatalogueStoreTests {
         #expect(rig.store.status().revision == 2)
     }
 
+    /// A second store over the same cache directory: the app after a relaunch.
+    private func relaunched(_ rig: Rig) -> CatalogueStore {
+        CatalogueStore(
+            bundled: try! Catalogue.parse(try! revisionData(1)),
+            directory: rig.directory,
+            remoteURL: URL(string: "https://example.test/models.json")!,
+            session: rig.remote.stub.session,
+            build: 0,
+            now: { [clock = rig.clock] in clock.now }
+        )
+    }
+
+    @Test func theETagSurvivesARelaunchSoTheFirstFetchAfterwardsIsConditional() async throws {
+        let rig = try Rig()
+        rig.remote.serve(try revisionData(2), etag: "\"abc\"")
+        await rig.store.refresh()                       // stores the ETag with the cache
+
+        let second = relaunched(rig)
+        #expect(second.status().revision == 2)          // the cache itself came back
+        let result = await second.refresh()
+        #expect(rig.remote.requests.last?.headers["if-none-match"] == "\"abc\"")
+        #expect(result == .notModified)
+    }
+
+    @Test func aRelaunchWithoutAStoredETagFetchesUnconditionally() async throws {
+        let rig = try Rig()
+        rig.remote.serve(try revisionData(2), etag: "\"abc\"")
+        await rig.store.refresh()
+        // The pair: the same cache with the ETag blanked on disk sends no If-None-Match,
+        // so the case above is reading the stored ETag and not some other source.
+        try Data(#"{}"#.utf8).write(to: rig.directory.appending(path: "meta.json"))
+
+        let second = relaunched(rig)
+        _ = await second.refresh()
+        #expect(rig.remote.requests.last?.headers["if-none-match"] == nil)
+    }
+
     @Test func theFetchGoesToTheCompiledRemoteURL() {
         // The URL named in the brief, typed out rather than read back from the constant.
         #expect(CatalogueStore.remoteURL.absoluteString ==

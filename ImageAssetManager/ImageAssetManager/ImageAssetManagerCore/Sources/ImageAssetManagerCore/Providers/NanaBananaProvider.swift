@@ -79,28 +79,67 @@ public struct NanaBananaProvider: ImageProvider {
             throw ProviderError.apiKeyNotFound
         }
 
+        let first = try reresolve(params, references: references, force: false)
         do {
-            return try await attempt(params, references: references, apiKey: apiKey, session: session)
+            return try await attempt(first, references: references, apiKey: apiKey, session: session)
         } catch ProviderError.modelUnavailable {
-            // Spec v0.1 §4.4: a 404 forces one catalogue refresh and one retry.
+            // Spec v0.1 §4.4: a 404 forces one catalogue refresh and one retry. The retry
+            // is built from the request again, not from the old resolution: the new model's
+            // size and price, and the budget re-checked, before anything is sent.
             await catalogue.refreshAfterModelUnavailable()
-            return try await attempt(params, references: references, apiKey: apiKey, session: session)
+            let second = try reresolve(params, references: references, force: true)
+            return try await attempt(second, references: references, apiKey: apiKey, session: session)
         }
     }
 
-    private func attempt(_ params: GenerationParams, references: [ReferenceInput]?, apiKey: String, session: URLSession) async throws -> GeneratedImage {
+    /// The params to send, and whether they differ from the caller's (a different model,
+    /// size or price). Unless `force`, a model the catalogue still lists is left alone; a model
+    /// retired since the request was built, or one that just 404ed, is resolved again from the
+    /// request's own inputs, and the new price is checked against the budget the call was gated on.
+    private func reresolve(_ params: GenerationParams, references: [ReferenceInput]?, force: Bool) throws -> (params: GenerationParams, changed: Bool) {
         let snapshot = catalogue.snapshot()
-        // A model retired since the request was built goes to its replacement.
-        let live = snapshot.model(provider: providerID, id: params.model.id) != nil
-            ? params.model.id
-            : (snapshot.replacement(for: params.model.id) ?? params.model.id)
-        guard let entry = snapshot.model(provider: providerID, id: live) else {
+        if !force && snapshot.model(provider: providerID, id: params.model.id) != nil {
+            return (params, false)
+        }
+        let resolution: Resolution
+        do {
+            resolution = try ModelResolver.resolveSelection(
+                provider: providerID, modelID: params.model.id, referenceCount: references?.count ?? 0,
+                aspectRatio: params.aspectRatio.apiRatio(width: params.width, height: params.height),
+                catalogue: snapshot, providers: [providerID]
+            )
+        } catch {
+            throw ProviderError.modelUnavailable(params.model.id)
+        }
+        let model = resolution.imageModel
+        let changed = model.id != params.model.id || model.imageSize != params.model.imageSize
+            || model.costPerImage != params.model.costPerImage
+        if changed, let budget = params.budget {
+            _ = try GenerationPolicy.checkBudget(count: budget.count, unitCost: model.costPerImage, limits: budget.limits)
+        }
+        let next = GenerationParams(
+            prompt: params.prompt, negativePrompt: params.negativePrompt, model: model,
+            aspectRatio: params.aspectRatio, width: params.width, height: params.height,
+            seed: params.seed, additionalParams: params.additionalParams, budget: params.budget
+        )
+        return (next, changed)
+    }
+
+    private func attempt(_ resolved: (params: GenerationParams, changed: Bool), references: [ReferenceInput]?, apiKey: String, session: URLSession) async throws -> GeneratedImage {
+        let params = resolved.params
+        let snapshot = catalogue.snapshot()
+        guard let entry = snapshot.model(provider: providerID, id: params.model.id) else {
             throw ProviderError.modelUnavailable(params.model.id)
         }
 
         let request = try Self.urlRequest(entry: entry, params: params, references: references, apiKey: apiKey)
         let data = try await send(request, modelID: entry.id, using: session)
-        return try Self.parseResponse(data, usdToGBP: snapshot.fx)
+        let image = try Self.parseResponse(data, usdToGBP: snapshot.fx)
+        guard resolved.changed else { return image }
+        return GeneratedImage(
+            data: image.data, format: image.format, actualCost: image.actualCost, seed: image.seed,
+            rawResponse: image.rawResponse, modelUsed: entry.id, estimatedCostGBP: params.model.costPerImage
+        )
     }
 
     // MARK: - Request

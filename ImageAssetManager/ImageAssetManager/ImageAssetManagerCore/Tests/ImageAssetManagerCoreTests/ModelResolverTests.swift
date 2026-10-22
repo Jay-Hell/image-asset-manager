@@ -207,6 +207,25 @@ struct ModelResolverTests {
         #expect(try resolve(ResolveRequest(explicitModel: "gemini-3.1-flash-image")).model.id == "gemini-3.1-flash-image")
     }
 
+    @Test func anExplicitModelListedOnTwoTiersTakesTheFirstInTierOrderEveryTime() throws {
+        // gemini-nano-banana-2.1 is on standard (no size: default 1K) and, added here, on pro at 4K.
+        // Tier order is fast, standard, pro, so standard's route wins: 1K, $0.0336 x 0.79 = 0.026544.
+        // Fresh parses vary dictionary order from instance to instance, so repeat.
+        for _ in 0..<60 {
+            let catalogue = try RepoCatalogue.parsed { root in
+                var pro = tierRoutes(root, tier: "pro")
+                pro.append(["provider": "nano_banana", "model": "gemini-nano-banana-2.1", "imageSize": "4K", "usdEstimate": 0.113])
+                setTierRoutes(&root, tier: "pro", pro)
+            }
+            let r = try ModelResolver.resolve(
+                ResolveRequest(explicitModel: "nano_banana:gemini-nano-banana-2.1"),
+                catalogue: catalogue, providers: ["nano_banana"])
+            #expect(r.imageSize == "1K")
+            // Not ==: the fixture re-serialises 0.0336 as a double, so allow float noise.
+            #expect(abs(r.estimateGBP - Decimal(string: "0.026544")!) < Decimal(string: "0.000000001")!)
+        }
+    }
+
     @Test func anExplicitModelStillFacesTheCapabilityAndParameterChecks() throws {
         let catalogue = try RepoCatalogue.parsed { root in
             var list = modelList(root)

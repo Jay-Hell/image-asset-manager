@@ -107,10 +107,10 @@ struct GenerationGateTests {
         let (service, db, _) = try service(FakeProvider(image: moved))
         let outcome = try await service.generate(request())
         #expect(outcome.modelID == "new-model-bb")
-        #expect(outcome.estimatedCost == 0.10586)
+        #expect(abs(outcome.estimatedCost - 0.10586) < 1e-9)   // Decimal to Double at the DB boundary
         let row = try #require(try await db.fetchAsset(id: outcome.assetID))
         #expect(row.modelID == "new-model-bb")
-        #expect(row.estimatedCost == 0.10586)
+        #expect(abs(try #require(row.estimatedCost) - 0.10586) < 1e-9)
     }
 
     @Test func anUnmovedModelStaysTheRequestsAndItsPrice() async throws {

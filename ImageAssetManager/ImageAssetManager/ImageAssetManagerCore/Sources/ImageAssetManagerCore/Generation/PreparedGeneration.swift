@@ -30,12 +30,13 @@ public struct PreparedGeneration: Sendable, Equatable {
             aspectRatio: aspectRatio, catalogue: catalogue, providers: providers
         )
         let budget = GenerationPolicy.BudgetContext(count: 1, limits: limits)
-        return PreparedGeneration(resolution: resolution, budget: budget, subtotalGBP: resolution.estimateGBP)
+        let subtotal = try GenerationPolicy.checkBudget(count: budget.count, unitCost: resolution.estimateGBP, limits: limits)
+        return PreparedGeneration(resolution: resolution, budget: budget, subtotalGBP: subtotal)
     }
 
     /// What to store for a finished generation: the model that served it (the provider
     /// reports a change made by a 404 retry) and its estimate; otherwise the captured resolution's.
     public func recording(_ image: GeneratedImage) -> (modelID: String, estimatedCostGBP: Decimal) {
-        (resolution.model.id, resolution.estimateGBP)
+        (image.modelUsed ?? resolution.model.id, image.estimatedCostGBP ?? resolution.estimateGBP)
     }
 }
