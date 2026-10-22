@@ -291,7 +291,7 @@ xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManager
 
 **macOS app tests launch the app as their host.** Under XCTest (`TestHostIsolation.isTestHost`, from the variables XCTest sets) `AppEnvironment.make()` opens a fresh library under the temporary directory and never reads the bookmark, UserDefaults or iCloud; the window shows no library UI and the MCP listener does not start. `ImageAssetManagerTests` asserts the library the host actually opened is inside the temporary directory. Keep that test, and keep anything new at launch behind `isTestHost`.
 
-**Three Core tests touch the login Keychain** (`NanaBananaProviderTests.generateThrowsWhenKeyMissing`, `…OnRateLimit`, `…OnInvalidKey`): they store and delete the real `nano_banana_api_key` item. On John's Mac run Core tests with `--skip "generateThrowsWhenKeyMissing|generateThrowsOnRateLimit|generateThrowsOnInvalidKey"` until they are moved off the real service name.
+**No test touches the real Keychain.** Providers and `AnthropicClient` take an injected API-key closure; tests pass a fake. Keep it that way: a test that stores or deletes a real item can wipe John's key.
 
 **Content, not names.** `AssetStore.store` sniffs the bytes (`MediaType(sniffing:)`: PNG/JPEG/WebP/HEIC signatures, SVG root) and refuses a MIME label that disagrees, before writing anything. Previews go through `AssetPreview.render(contentsOf:)`, which chooses the renderer from the bytes: SVG always via the sanitiser, rasters via ImageIO, anything else not at all. Reference images sent to Gemini carry their sniffed MIME type.
 
