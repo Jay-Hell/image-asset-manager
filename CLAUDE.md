@@ -17,7 +17,8 @@ image-asset-manager/
     ImageAssetManager/                  ← Universal app target (macOS + iPadOS)
       App/                              ← ImageAssetManagerApp, AppEnvironment,
                                           MCPServer (NWListener, macOS only),
-                                          MCPServer+Generate (generate_image handler)
+                                          MCPServer+Generate (transport only: hands generation
+                                          tools to Core's GenerateTools; the budget ceiling)
       Features/                         ← Generation, Library, Prompts, Export,
                                           Spend, Settings, ContentView
       Shared/                           ← Components (KeychainKeyEditor, LocalImage),
@@ -35,7 +36,10 @@ image-asset-manager/
           Database/                     ← AppDatabase + per-feature query extensions,
                                           LibrarySetup, migrations, Resolvers
           Generation/                   ← GenerationService (actor), GenerationPolicy
-                                          (budget/routing), PromptFlattener
+                                          (budget/routing), PromptFlattener,
+                                          PreparedGeneration + GenerationPlanner (resolve + gate,
+                                          panel and MCP), GenerateTools (MCP generate /
+                                          generate_image / list_generation_options)
           Library/                      ← LibraryMigrationService (actor), ImportNaming
           Catalogue/                    ← Catalogue (schema + bounds), CatalogueStore
                                           (sources, refresh), ModelResolver, JSONValue
@@ -63,8 +67,8 @@ image-asset-manager/
 - **ImageAssetManagerCore** — all business logic, data access (GRDB), provider abstraction, API clients. No SwiftUI imports. Swift 6 language mode; use `Sendable`, actors, and `async/await` throughout.
 - **ImageAssetManager app target** — SwiftUI views only; imports Core for all logic. `AppEnvironment` (`@Observable`, in `App/AppEnvironment.swift`) is the single source of truth — created once in `ImageAssetManagerApp.swift` and injected via `.environment(env)` into both the main `WindowGroup` and the macOS `Settings` scene. Holds a `libraryRevision: Int` counter that view-models watch via `.task(id: env.libraryRevision)` to force a rebuild after destructive operations (library location change, clear library).
 - **MCP server** — two-tier setup:
-  - **Swift HTTP server** (`App/MCPServer.swift` + `App/MCPServer+Generate.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Reads via `AppDatabase+MCPQueries.swift`, writes via `GenerationService` for image generation. `database` and `libraryURL` are internal (not private) so extension files can see them.
-  - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools (`generate_image`, `mark_asset_used`, prompt tools) return a "requires the app to be running" error.
+  - **Swift HTTP server** (`App/MCPServer.swift` + `App/MCPServer+Generate.swift`, macOS only) — `NWListener` on `127.0.0.1:47821`, started from `ImageAssetManagerApp.startMCPServer()` when the app launches. Reads via `AppDatabase+MCPQueries.swift`; the generation tools are request-to-result code in Core (`GenerateTools`), where the tests drive it, so the app target keeps only transport. `database` and `libraryURL` are internal (not private) so extension files can see them.
+  - **Node.js proxy** (`mcp-server/` at repo root) — what Claude Code actually connects to. Forwards every tool call to the Swift server when running; when the app is closed, read-only tools fall back to reading `index.json` via `mcp-server/src/fallback.js`. Write tools (`generate`, `generate_image`, `list_generation_options`, `mark_asset_used`, prompt tools) return a "requires the app to be running" error (`fallback.js` gives the generation tools their own wording, checked before `index.json` is read).
 
 ### Storage
 
@@ -173,7 +177,7 @@ Every provider implements `ImageProvider: Sendable`. Adding a provider requires 
 
 ### Generation Pipeline
 
-`GenerationService` (`Generation/GenerationService.swift`, actor) owns the write pipeline: provider call → disk write → Asset/SpendLog/tags/refs/variant DB rows → `index.json` export. Shared by the MCP `generate_image` tool today and (planned) the in-app `GenerationViewModel.confirmGeneration()` to eliminate code drift.
+`GenerationService` (`Generation/GenerationService.swift`, actor) owns the write pipeline: provider call → disk write → Asset/SpendLog/tags/refs/variant DB rows → `index.json` export. Shared by the MCP generation tools and the in-app `GenerationViewModel` (`call` at Generate, `record` at Keep; `generate` = both) so the two cannot drift.
 
 Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/IO dependencies):
 
@@ -185,17 +189,29 @@ Policy decisions are pulled out into `GenerationPolicy` (pure, testable, no DB/I
 
 ### MCP Tools
 
-The Swift server exposes **10 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync.
+The Swift server exposes **12 tools**. Tool names live in both `App/MCPServer.swift` (Swift dispatch via `callTool(name:args:)`) and `mcp-server/src/tools.js` (Node schema) — keep them in sync (`mcp-server/test/tools.test.js` reads both and fails if they differ).
 
 **Read-only** (work offline via `index.json` fallback too): `search_assets`, `get_asset`, `get_asset_lineage`, `list_projects`, `get_spend`.
 
-**Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate_image`, `upload_asset`.
+**Write / app-required**: `search_prompts`, `get_prompt`, `mark_asset_used`, `generate`, `generate_image`, `list_generation_options`, `upload_asset`.
 
-**Per-tool timeouts.** `appClient.js` defaults to 8 s but consults `TOOL_TIMEOUTS_MS` first — `upload_asset` 180 s, `generate_image` 300 s. Any tool outlasting a database read needs an entry; without one the proxy aborts while the app carries on, so the caller sees a failure whose side effect still happened.
+**Tool descriptions name no model and state no price** (spec T21; a node test holds `tools.js` to it). An agent learns model names and prices from `list_generation_options` only.
+
+**Per-tool timeouts.** `appClient.js` defaults to 8 s but consults `TOOL_TIMEOUTS_MS` first — `upload_asset` 180 s, `generate` and `generate_image` 300 s, `list_generation_options` 60 s (it may fetch OpenRouter's model list). Any tool outlasting a database read needs an entry; without one the proxy aborts while the app carries on, so the caller sees a failure whose side effect still happened.
 
 `upload_asset` sends one asset's bytes to a URL a receiving system has already minted (Deliverable Orchestration's `artefact_asset_upload_url`), so image bytes never enter the calling model's context — only a receipt returns. The app performs the PUT rather than the Node proxy for two reasons: the proxy runs as a child of Claude Code and is refused at `open()` by macOS TCC on the iCloud container, and only the app knows the live library location (`LIBRARY_PATH` is an offline fallback and can be stale). Logic lives in `ImageAssetManagerCore/Network/AssetUploader.swift` — HTTPS only, no credentials in the URL, default port only, and an allowlist of `portal.ionicconsulting.co.uk` plus the `.r2.cloudflarestorage.com` suffix (leading dot deliberate — it forces a label boundary, so `notr2.cloudflarestorage.com` fails). The destination is validated **before** the file is read: the caller is a model that may have just read untrusted text, so an unguarded version of this tool is an exfiltration primitive. 10 MB cap mirrors the portal's `MAX_ASSET_BYTES`. Usage is not recorded — `mark_asset_used` stays a separate call.
 
-`generate_image` takes prompt (string or JSON), quality tier, optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; accepts `project` singular or `projects` array), tags, variant family, optional references (project active set + explicit asset IDs merged and capped at the resolved model's reference limit), and optional `max_images` / `max_cost_gbp` overrides. Returns `{ generated: [{asset_id, file_path, model_used, estimated_cost_gbp, seed}], total_cost_gbp, cost_breakdown, notes }`. Offline: `fallback.js` short-circuits non-offline tools via its `else` branch — no per-tool entry needed.
+**`generate`** (`Generation/GenerateTools.swift`, Core) says what is wanted and the app picks the model. Inputs: `media` (`image` default, `vector`; `video`/`audio` answer "not yet supported"), `quality` (`fast`/`standard`/`pro`/`auto`/`with_references`), `require` (`references`, `transparent_background`, `seed`), `model` (`provider:model`, an explicit override), `aspect_ratio` (`square`/`landscape`/`portrait` or an exact ratio such as `4:3`, carried as `GenerationParams.ratio` and checked against the resolved model), `resolution`, plus prompt (string or JSON), optional project (name or UUID via `AppDatabase.findProject(idOrName:)`; `project` singular or `projects` array), tags, variant family, references (project active set + explicit asset IDs, capped at the resolved model's limit), `count`, and `max_images` / `max_cost_gbp` (clamped to the app ceiling). It calls `GenerationPlanner` (the same entry the panel uses): resolve once, gate, and, for an explicit OpenRouter model nothing prices, ask `OpenRouterModelStore.loadPrice` first. Returns `{ generated: [{asset_id, file_path, media_type, model_used, provider_used, estimated_cost_gbp, actual_cost_gbp, seed}], resolved: {provider, model, tier, reason}, cost: {estimated_gbp, actual_gbp, actual_from_provider}, batch: {requested, made, stopped_early}, total_cost_gbp, cost_breakdown, notes }`. `resolved` and the costs are the route that served (after a fallback, not route one); `reason` and `notes` carry the reroute and fallback notes. A batch stops when actual spend so far plus the next estimate would pass `max_cost_gbp` (T17), and if a later image fails after earlier ones were made, the made ones are returned with the reason in `notes`.
+
+**`generate_image`** is `generate` with `media` forced to `image` (T18); the same code path, so the two cannot disagree. **`list_generation_options`** returns providers (with `configured`), per media the tiers with the model they resolve to, estimate (GBP), estimate source, capabilities and fallbacks, and the capability names; `include_all: true` adds every model (`ModelOptions.all`: catalogue plus the OpenRouter live list), each with `model` (the string to pass as `model`), estimate and capabilities. The panel's "Specific model…" picker reads the same `ModelOptions`.
+
+Offline: `fallback.js` throws a specific "needs the app" error for the three generation tools before it reads `index.json`; any other non-offline tool takes its `default` branch.
+
+**Panel and MCP are one path.** The panel's tier / specific-model pickers become a `PanelSelection`; `GenerationPlanner.prepare` resolves and gates (T19: same function, same estimate as the MCP for the same request); `GenerationService.call` runs the routes through `RouteExecutor` (fallback included) and holds the answer; Keep calls `GenerationService.record` (`AssetStore`, so `media_type` is set and a refused paid image is recorded as spend and shown). Both surfaces build their `GenerationService.Request` with `PreparedGeneration.request(...)`.
+
+**Learnt OpenRouter prices** are keyed by model and size (`OpenRouterPrice.key`), floored at $0.001 an image whenever stored or read, and an observed cost counts for its own size only; the model-level `/endpoints` price serves any size.
+
+**Provider error text** goes through `ProviderMessage.text(from:redacting:)` (Anthropic's, Google's and OpenRouter's JSON → `error.message`, whole up to 2,000 characters, the key replaced if echoed). The panel shows errors with `ErrorMessageText`: wrapped, selectable, never one clipped line.
 
 ### Platform Strategy
 
@@ -300,7 +316,7 @@ xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManager
 
 **SVG preview** (`SVGPreview`) always renders a sanitised copy (`SVGDocument.sanitisedForPreview`), capped at 10 MB. The sanitiser is an allow-list: static drawing elements, geometry and presentation attributes, `style` filtered to presentation properties, CSS functions limited to colour, transform and fragment `url(#…)`, no CSS escapes, no foreign namespaces. macOS uses `NSImage`; on iPadOS `UIImage(data:)` returns nil for SVG, so WebKit draws it as an `<img>` with JavaScript off. WebKit does not complete loads in the package test host on the simulator, so the iPad path is only provable inside an app.
 
-**MCP proxy tests:** `node --test mcp-server/test/`.
+**MCP proxy tests:** `node --test "mcp-server/test/*.test.js"` (Node 24+ does not take a directory). `scripts/census.sh` runs them (`MIN_NODE`).
 
 ## Branching Strategy
 
