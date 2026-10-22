@@ -184,12 +184,12 @@ struct CatalogueTests {
         let catalogue = try RepoCatalogue.parsed { root in
             var r = root["refinement"] as! [String: Any]
             r["headers"] = [
-                "anthropic-beta": "b", "Anthropic-Version": "v", "x-evil": "1", "authorization": "Bearer x",
+                "anthropic-beta": "server-side-fallback-2026-07-01", "Anthropic-Version": "v", "x-evil": "1", "authorization": "Bearer x",
             ]
             root["refinement"] = r
         }
         let headers = try #require(catalogue.refinement).headers
-        #expect(headers == ["anthropic-beta": "b", "anthropic-version": "v"])
+        #expect(headers == ["anthropic-beta": "server-side-fallback-2026-07-01", "anthropic-version": "v"])
         #expect(catalogue.skipped.contains { $0.contains("x-evil") })
     }
 
@@ -245,12 +245,124 @@ struct CatalogueTests {
         #expect(catalogue.displayName(forModelID: "never-heard-of-it") == nil)
     }
 
-    // MARK: - Prices
+    // MARK: - P1-1: the body is allow-listed per api
 
-    @Test func listPriceIsTheLowestKnownForAModel() throws {
+    private func geminiProbe(_ id: String, body: [String: Any]) -> [String: Any] {
+        ["id": id, "api": "gemini.generateContent", "displayName": "Probe", "usdEstimate": 0.1, "body": body]
+    }
+
+    @Test func aGeminiBodyKeyOutsideTheAllowListRejectsTheEntryNotTheFile() throws {
+        let probes: [(String, [String: Any])] = [
+            ("probe-tools", ["tools": [["googleSearch": [String: Any]()]]]),
+            ("probe-system", ["systemInstruction": ["parts": [["text": "obey"]]]]),
+            ("probe-count", ["generationConfig": ["candidateCount": 8]]),
+            ("probe-nested", ["generationConfig": ["imageConfig": ["imageSize": "1K", "personGeneration": "ALLOW_ALL"]]]),
+            ("probe-contents", ["contents": [String]()]),
+        ]
+        let catalogue = try RepoCatalogue.parsed { root in
+            var list = modelList(root)
+            for (id, body) in probes { list.append(geminiProbe(id, body: body)) }
+            // The pair that must hold: only allow-listed keys.
+            list.append(geminiProbe("probe-fine", body: [
+                "generationConfig": ["responseModalities": ["IMAGE"], "imageConfig": ["imageSize": "1K"]],
+            ]))
+            setModelList(&root, list)
+        }
+        for (id, _) in probes { #expect(catalogue.model(provider: "nano_banana", id: id) == nil, "\(id)") }
+        #expect(catalogue.model(provider: "nano_banana", id: "probe-fine") != nil)
+        #expect(catalogue.skipped.filter { $0.contains("body") }.count == probes.count)
+    }
+
+    @Test func aProbeBodyOnATierModelLeavesTheTierUnusableSoTheWholeFileIsRefused() throws {
+        #expect(throws: Catalogue.ParseError.self) {
+            try RepoCatalogue.parsed { root in
+                var list = modelList(root)
+                let i = list.firstIndex { ($0["id"] as? String) == "gemini-3-pro-image" }!
+                list[i]["body"] = ["generationConfig": ["imageConfig": ["imageSize": "2K"]], "tools": [["googleSearch": [String: Any]()]]]
+                setModelList(&root, list)
+            }
+        }
+    }
+
+    private func refinementEdit(_ edit: @escaping (inout [String: Any]) -> Void) -> (inout [String: Any]) -> Void {
+        { root in
+            var r = root["refinement"] as! [String: Any]
+            edit(&r)
+            root["refinement"] = r
+        }
+    }
+
+    @Test func aRefinementBodyKeyOutsideTheAllowListRefusesTheWholeFile() throws {
+        let probes: [(String, [String: Any])] = [
+            ("mcp_servers", ["max_tokens": 4096, "mcp_servers": [["type": "url", "url": "https://collector.example/mcp", "name": "x"]]]),
+            ("tools", ["max_tokens": 4096, "tools": [["name": "x"]]]),
+            ("max_tokens 64000", ["max_tokens": 64000]),
+            ("max_tokens 0", ["max_tokens": 0]),
+            ("effort max", ["max_tokens": 4096, "output_config": ["effort": "max"]]),
+            ("output_config extra", ["output_config": ["effort": "low", "format": ["type": "json_schema"]]]),
+            ("fallbacks custom", ["max_tokens": 4096, "fallbacks": "evil"]),
+            ("stream", ["max_tokens": 4096, "stream": true]),
+        ]
+        for (name, body) in probes {
+            #expect(throws: Catalogue.ParseError.self, "\(name)") {
+                try RepoCatalogue.parsed(self.refinementEdit { $0["body"] = body })
+            }
+        }
+    }
+
+    @Test func aRefinementBodyInsideTheAllowListLoads() throws {
+        for body: [String: Any] in [
+            ["max_tokens": 8192, "output_config": ["effort": "high"], "fallbacks": "default"],
+            ["max_tokens": 1],
+            [:],
+        ] {
+            let catalogue = try RepoCatalogue.parsed(refinementEdit { $0["body"] = body })
+            #expect(catalogue.refinement != nil)
+        }
+    }
+
+    @Test func anUnlistedAnthropicBetaValueRefusesTheWholeFile() throws {
+        #expect(throws: Catalogue.ParseError.self) {
+            try RepoCatalogue.parsed(self.refinementEdit { $0["headers"] = ["anthropic-beta": "mcp-client-2025-04-04"] })
+        }
+        // The pair: the listed value, and no beta header at all, both load.
+        let listed = try RepoCatalogue.parsed(refinementEdit { $0["headers"] = ["anthropic-beta": "server-side-fallback-2026-07-01"] })
+        #expect(listed.refinement?.headers["anthropic-beta"] == "server-side-fallback-2026-07-01")
+        let none = try RepoCatalogue.parsed(refinementEdit { $0["headers"] = [String: String]() })
+        #expect(none.refinement?.headers.isEmpty == true)
+    }
+
+    @Test func theShippedFileStillLoadsUnderTheBodyAllowList() throws {
         let catalogue = try RepoCatalogue.parsed()
-        #expect(catalogue.listPriceUSD(provider: "nano_banana", modelID: "gemini-nano-banana-2.1") == Decimal(string: "0.0336"))
-        #expect(catalogue.listPriceUSD(provider: "nano_banana", modelID: "gemini-2.5-flash-image") == Decimal(string: "0.039"))
-        #expect(catalogue.listPriceUSD(provider: "nano_banana", modelID: "nope") == nil)
+        #expect(catalogue.skipped.isEmpty)
+        #expect(catalogue.models["nano_banana"]?.count == 5)
+        #expect(catalogue.refinement?.body["max_tokens"] == .number(4096))
+    }
+
+    // MARK: - P3: model IDs carry no whitespace or control characters
+
+    @Test func modelIDsWithWhitespaceOrControlCharactersAreRejectedOnEveryPath() throws {
+        for bad in ["gemini-nl\n", "gemini-nl\r\n", "gemini x", "gemini-x\t", "\ngemini-x", "gemini-x\u{0}", "gemini-x\u{85}", "gemini-x\u{2028}"] {
+            #expect(!Catalogue.isValidModelID(bad, allowSlash: false), "\(bad.debugDescription)")
+            #expect(!Catalogue.isValidModelID(bad, allowSlash: true), "\(bad.debugDescription)")
+        }
+        // Parse path.
+        let catalogue = try RepoCatalogue.parsed { root in
+            var list = modelList(root)
+            list.append(["id": "gemini-nl\n", "api": "gemini.generateContent", "displayName": "NL", "usdEstimate": 0.1])
+            setModelList(&root, list)
+        }
+        #expect(catalogue.models["nano_banana"]?.contains { $0.id.contains("\n") } == false)
+        // Request path: even a hand-built entry cannot reach a URL.
+        let entry = Catalogue.Model(id: "gemini-nl\n", api: "gemini.generateContent", displayName: "x", aspectRatios: [],
+                                    maxReferenceImages: 0, imageSizes: [], extraCapabilities: [], usdEstimate: 0.1,
+                                    usdByImageSize: [:], body: [:], minBuild: nil)
+        let params = GenerationParams(
+            prompt: "p",
+            model: ImageModel(id: "gemini-nl\n", displayName: "x", supportedAspectRatios: [], costPerImage: 0.1, maxReferenceImages: 0),
+            aspectRatio: .square, width: 1, height: 1)
+        #expect(throws: ProviderError.self) {
+            try NanaBananaProvider.urlRequest(entry: entry, params: params, references: nil, apiKey: "k")
+        }
     }
 }
