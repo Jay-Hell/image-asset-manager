@@ -3,11 +3,19 @@ import ImageIO
 
 public enum AssetStoreError: Error, Equatable, LocalizedError {
     case unsupportedMediaType(String)
+    /// The bytes are a type the library knows, but not the one they were labelled as.
+    case contentMismatch(declared: String, actual: String)
+    /// The bytes are none of the types the library stores.
+    case unrecognisedContent(declared: String)
 
     public var errorDescription: String? {
         switch self {
         case .unsupportedMediaType(let mime):
             return "The library cannot store '\(mime)'."
+        case .contentMismatch(let declared, let actual):
+            return "The file was labelled '\(declared)' but its contents are '\(actual)'."
+        case .unrecognisedContent(let declared):
+            return "The file was labelled '\(declared)' but its contents are not an image the library stores."
         }
     }
 }
@@ -31,8 +39,16 @@ public enum AssetStore {
         assetID: String = UUID().uuidString,
         libraryURL: URL
     ) throws -> StoredAssetFile {
-        guard let mediaType = MediaType(mimeType: mimeType) else {
+        guard let declared = MediaType(mimeType: mimeType) else {
             throw AssetStoreError.unsupportedMediaType(mimeType)
+        }
+        // Stored and labelled by what the bytes are. A label that disagrees is refused rather
+        // than trusted: SVG under a raster name would reach a renderer without the sanitiser.
+        guard let mediaType = MediaType(sniffing: data) else {
+            throw AssetStoreError.unrecognisedContent(declared: declared.rawValue)
+        }
+        guard mediaType == declared else {
+            throw AssetStoreError.contentMismatch(declared: declared.rawValue, actual: mediaType.rawValue)
         }
         let filename = "\(assetID).\(mediaType.fileExtension)"
         let assetsDir = libraryURL.appending(path: "assets")

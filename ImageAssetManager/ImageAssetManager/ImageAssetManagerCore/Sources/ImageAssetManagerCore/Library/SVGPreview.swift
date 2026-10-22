@@ -17,8 +17,11 @@ import WebKit
 ///   copy is drawn by WebKit as an `<img>` — the SVG-as-image context, which never runs
 ///   script or loads sub-resources — in a web view with JavaScript off and no persistent store.
 public enum SVGPreview {
+    /// Largest SVG read for a preview: the 10 MB the upload path allows.
+    public static let maxInputBytes = 10 * 1024 * 1024
+
     public static func render(_ data: Data, maxPixelSize: Int) async -> CGImage? {
-        guard let safe = SVGDocument.sanitisedForPreview(data) else { return nil }
+        guard data.count <= maxInputBytes, let safe = SVGDocument.sanitisedForPreview(data) else { return nil }
         #if canImport(AppKit)
         guard let image = NSImage(data: safe), image.size.width > 0, image.size.height > 0 else { return nil }
         let size = fitted(image.size, maxPixelSize: maxPixelSize)

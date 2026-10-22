@@ -4,12 +4,12 @@ import ImageAssetManagerCore
 // Loads and displays a local file-system image asynchronously.
 // Placeholder and background always use Color.imageMatte per spec.
 struct LocalImage: View {
-    /// Longest side an SVG is rasterised at: sharp in the inspector, cheap in the grid.
-    static let svgPixelSize = 1024
+    /// Longest side a preview is drawn at: sharp in the inspector, cheap in the grid.
+    static let previewPixelSize = 1024
 
     let url: URL
     @State private var image: Image?
-    @State private var svgRequest: URL?
+    @State private var request: URL?
 
     var body: some View {
         Group {
@@ -24,23 +24,15 @@ struct LocalImage: View {
         .accessibilityHidden(true)  // accessibility handled by containing element
     }
 
+    /// The renderer is chosen from the file's bytes, never its name: SVG always goes through
+    /// the sanitiser, and bytes that are neither SVG nor a known raster draw nothing.
     private func loadImage() {
-        guard let data = try? Data(contentsOf: url) else { return }
-        if MediaType(filename: url.lastPathComponent) == .svg {
-            // Rendered from a sanitised copy: no script, no external references (see SVGPreview).
-            let requested = url
-            svgRequest = requested
-            Task {
-                guard let rendered = await SVGPreview.render(data, maxPixelSize: Self.svgPixelSize),
-                      svgRequest == requested else { return }   // the view moved on to another file
-                image = Image(decorative: rendered, scale: 1)
-            }
-            return
+        let requested = url
+        request = requested
+        Task {
+            guard let rendered = await AssetPreview.render(contentsOf: requested, maxPixelSize: Self.previewPixelSize),
+                  request == requested else { return }   // the view moved on to another file
+            image = Image(decorative: rendered, scale: 1)
         }
-        #if os(macOS)
-        if let native = NSImage(data: data) { image = Image(nsImage: native) }
-        #else
-        if let native = UIImage(data: data) { image = Image(uiImage: native) }
-        #endif
     }
 }
