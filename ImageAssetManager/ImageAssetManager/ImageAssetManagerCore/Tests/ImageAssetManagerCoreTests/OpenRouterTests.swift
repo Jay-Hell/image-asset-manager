@@ -21,7 +21,7 @@ enum ORFixture {
     static let modelCount = 61
 }
 
-private func okBody(cost: Double? = 0.0336, mime: String? = nil, bytes: String = tinyPNGBase64) -> Data {
+func okBody(cost: Double? = 0.0336, mime: String? = nil, bytes: String = tinyPNGBase64) -> Data {
     var item: [String: Any] = ["b64_json": bytes]
     if let mime { item["media_type"] = mime }
     var root: [String: Any] = ["data": [item]]
@@ -42,7 +42,7 @@ private final class CallCounter: @unchecked Sendable {
 
 private let svgBytes = Data(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="white"/></svg>"#.utf8)
 
-private struct ORRig {
+struct ORRig {
     let list: StubSession
     let live: OpenRouterModelStore
     let remote: StubSession

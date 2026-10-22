@@ -107,7 +107,7 @@ public struct OpenRouterProvider: ImageProvider {
         }
         let fx = catalogue.snapshot().fx
         let image = try Self.parseResponse(data, usdToGBP: fx)
-        if let usd = Self.costUSD(in: data) { live.recordObservedCost(usd: usd, for: params.model.id) }
+        if let usd = Self.costUSD(in: data) { live.recordObservedCost(usd: usd, for: params.model.id, size: params.model.imageSize) }
         return image
     }
 
