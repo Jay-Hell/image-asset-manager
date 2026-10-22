@@ -18,12 +18,29 @@ export function isOfflineTool(name) {
   return OFFLINE_TOOLS.has(name);
 }
 
+// The v8 backfill mapping (AppDatabase.swift), for records with no media_type of their own:
+// App Store 1.0.x rewrites index.json without the field.
+const MEDIA_TYPES_BY_EXTENSION = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  svg: 'image/svg+xml',
+};
+
+function withMediaType(asset) {
+  if (asset.media_type || typeof asset.filename !== 'string') return asset;
+  const type = MEDIA_TYPES_BY_EXTENSION[path.extname(asset.filename).slice(1).toLowerCase()];
+  return type ? { ...asset, media_type: type } : asset;
+}
+
 function loadIndex(libraryPath) {
   const indexPath = path.join(libraryPath, 'index.json');
   if (!fs.existsSync(indexPath)) {
     throw new Error(`index.json not found at ${indexPath}. Start the app at least once to generate it.`);
   }
-  return JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+  return JSON.parse(fs.readFileSync(indexPath, 'utf8')).map(withMediaType);
 }
 
 export function callFallbackTool(name, args, libraryPath) {
