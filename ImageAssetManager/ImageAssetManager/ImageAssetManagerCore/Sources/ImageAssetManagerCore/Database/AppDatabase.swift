@@ -11,6 +11,50 @@ public final class AppDatabase: Sendable {
         }
         writer = try DatabaseQueue(path: path, configuration: config)
 
+        let migrator = Self.makeMigrator()
+        // An existing library with a migration still to run is backed up first. A fresh
+        // database (nothing applied) has nothing to lose; a current one has nothing pending.
+        // If the backup throws, init throws before `migrate` — no backup, no migration.
+        let needsBackup = try writer.read { db in
+            try !migrator.appliedIdentifiers(db).isEmpty && !migrator.hasCompletedMigrations(db)
+        }
+        if needsBackup {
+            try LibraryBackup.backUp(writer, databasePath: path)
+        }
+        try migrator.migrate(writer)
+    }
+
+    /// Every migration this build knows, in order. Append-only: add new migrations at the end.
+    static func makeMigrator() -> DatabaseMigrator {
+        var migrator = appStore1_0Migrator()
+
+        migrator.registerMigration("v8_asset_media_type") { db in
+            // Nullable with no default, deliberately: App Store 1.0.x knows only v1–v7 and
+            // inserts assets without this column, so NOT NULL would break it. Core reads
+            // through `Asset.effectiveMediaType`, which falls back to the extension.
+            try db.alter(table: "assets") { t in
+                t.add(column: "media_type", .text)
+            }
+            // Backfill from the extension. The mapping is frozen here rather than calling
+            // `MediaType`, so this migration does the same thing on every library for ever.
+            // LIKE is case-insensitive for ASCII, so `.JPG` matches. Anything else stays NULL.
+            try db.execute(sql: """
+                UPDATE assets SET media_type = CASE
+                    WHEN filename LIKE '%.png' THEN 'image/png'
+                    WHEN filename LIKE '%.jpg' OR filename LIKE '%.jpeg' THEN 'image/jpeg'
+                    WHEN filename LIKE '%.webp' THEN 'image/webp'
+                    WHEN filename LIKE '%.heic' THEN 'image/heic'
+                    WHEN filename LIKE '%.svg' THEN 'image/svg+xml'
+                END
+                """)
+        }
+
+        return migrator
+    }
+
+    /// v1–v7: the schema App Store 1.0.x ships, and so the migrator that build opens every
+    /// library with. Separate so tests can stand in for it. Never edit these.
+    static func appStore1_0Migrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1_initial_schema") { db in
             try db.create(table: "projects") { t in
@@ -335,7 +379,7 @@ public final class AppDatabase: Sendable {
             try db.execute(sql: "DROP TABLE IF EXISTS collections")
         }
 
-        try migrator.migrate(writer)
+        return migrator
     }
 
     /// Flush the WAL journal into the main database file so it is self-contained before a copy or move.

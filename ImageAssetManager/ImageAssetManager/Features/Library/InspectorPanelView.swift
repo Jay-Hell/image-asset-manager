@@ -128,6 +128,9 @@ struct InspectorPanelView: View {
             sectionHeader("Details")
             labeledRow("Provider", detail.asset.providerID)
             labeledRow("Model", CatalogueStore.shared.displayName(forModelID: detail.asset.modelID))
+            if let type = detail.asset.effectiveMediaType {
+                labeledRow("Type", type == .svg ? "SVG (vector)" : type.fileExtension.uppercased())
+            }
             if let w = detail.asset.width, let h = detail.asset.height {
                 labeledRow("Dimensions", "\(w) × \(h)")
             }

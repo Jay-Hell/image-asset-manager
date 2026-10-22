@@ -83,6 +83,7 @@ Layout inside the container (created by `LibrarySetup.initialise(at:)`):
   index.json       ← atomic full-library export; written after every DB write
   providers.json   ← provider config + cost models (no secrets)
   prompts/         ← prompt library markdown files ({uuid}.md)
+  Backups/         ← library-<UTC>.db, taken before any pending migration; newest five kept
 ```
 
 API keys are stored in Keychain only — never in iCloud, providers.json, or code.
@@ -115,6 +116,11 @@ All strategies dedupe via an in-flight `usedFilenames: Set<String>` passed by re
 - `v5_clients_table_and_project_client_id` — `clients(id, name UNIQUE, created_at)`, plus `projects.client_id` FK (`ON DELETE RESTRICT`). Backfills a Client per distinct non-empty `projects.client_name`. `client_name` column is retained but deprecated; new code reads via `projects.client_id`. Managed in Settings (`ClientsSettingsSection` / `ProjectsSettingsSection`).
 - `v6_asset_projects_join_and_backfill` — `asset_projects(asset_id, project_id, is_primary)` composite-key join. Backfills one primary row per existing `assets.project_id`. **`assets.project_id` is kept as a transitional "primary project" mirror** (first entry of the asset's project set). `searchAssets(projectIDs:)` filters via the join table; `setProjectsForAsset(...)` replaces an asset's set and updates the mirror. MCP `search_assets` and `generate_image` accept both a singular `project` string (shorthand) and a `projects` array — caller's first entry is the primary. `IndexExporter` emits both `project_id` (primary) and `project_ids` / `project_names` arrays so the Node fallback can filter offline.
 - `v7_drop_collections` — drops the `collections` table and the `assets.collection_id` column (SQLite table-rebuild pattern). Collections were unreachable from the UI in practice (no creation path) and overlapped conceptually with projects + tags + variants. The metadata model is now **client → project(s) + tags + variant family**, nothing else.
+- `v8_asset_media_type` — `assets.media_type` (MIME), backfilled from the extension by a frozen SQL `CASE`. **Nullable with no default on purpose:** App Store 1.0.x knows only v1–v7 (`AppDatabase.appStore1_0Migrator()`) and inserts assets without the column. Read it through `Asset.effectiveMediaType` / `mediaKind` (`image` | `vector`), which fall back to the extension. `MigrationV8Tests` proves the 1.0.x migrator still opens, reads and writes a v8 library.
+
+**Backup before migrating.** `AppDatabase.init` copies an existing library with a pending migration to `Backups/library-<UTC>.db` through SQLite's backup API (`LibraryBackup`), keeping the newest five. Rotation never deletes the backup just taken (later-named files from clock skew can't push it out), and hidden `.library-*.db.partial*` files from a killed backup are swept before and after each one. A failed backup throws before `migrate`. `Backups/` is not in `LibraryMigrationService`'s item list, so backups stay behind on a location change.
+
+**Opening a library.** Launch and location change both go through `LibraryOpener.open(at:)`, never `LibrarySetup` + `AppDatabase` directly. It refuses (`LibraryOpenError`, nothing written, no backup, no migration) when `library.db` is an iCloud placeholder (`.library.db.icloud`), is reported not current, or is missing beside existing assets or a non-empty `index.json` — any of which would otherwise look like a fresh library and get an empty v8 database that conflicts with the real one. It starts the download; the app shows the reason and a Try Again button rather than crashing.
 
 Query logic is split by feature into extension files — add new queries in the matching extension rather than the core file:
 
@@ -276,7 +282,22 @@ swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerC
 # Run a single test
 swift test --package-path ImageAssetManager/ImageAssetManager/ImageAssetManagerCore \
   --filter TestSuiteName/testMethodName
+
+# Core tests on the iPad simulator (package as a workspace). Known reds there: the three
+# SVGPreview render cases (WebKit, see below) and three NanaBananaProvider key tests.
+xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManagerCore \
+  -scheme ImageAssetManagerCore -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'
 ```
+
+**macOS app tests launch the app as their host.** Under XCTest (`TestHostIsolation.isTestHost`, from the variables XCTest sets) `AppEnvironment.make()` opens a fresh library under the temporary directory and never reads the bookmark, UserDefaults or iCloud; the window shows no library UI and the MCP listener does not start. `ImageAssetManagerTests` asserts the library the host actually opened is inside the temporary directory. Keep that test, and keep anything new at launch behind `isTestHost`.
+
+**No test touches the real Keychain.** Providers and `AnthropicClient` take an injected API-key closure; tests pass a fake. Keep it that way: a test that stores or deletes a real item can wipe John's key.
+
+**Content, not names.** `AssetStore.store` sniffs the bytes (`MediaType(sniffing:)`: PNG/JPEG/WebP/HEIC signatures, SVG root) and refuses a MIME label that disagrees, before writing anything. Previews go through `AssetPreview.render(contentsOf:)`, which chooses the renderer from the bytes: SVG always via the sanitiser, rasters via ImageIO, anything else not at all. Reference images sent to Gemini carry their sniffed MIME type.
+
+**SVG preview** (`SVGPreview`) always renders a sanitised copy (`SVGDocument.sanitisedForPreview`), capped at 10 MB. The sanitiser is an allow-list: static drawing elements, geometry and presentation attributes, `style` filtered to presentation properties, CSS functions limited to colour, transform and fragment `url(#…)`, no CSS escapes, no foreign namespaces. macOS uses `NSImage`; on iPadOS `UIImage(data:)` returns nil for SVG, so WebKit draws it as an `<img>` with JavaScript off. WebKit does not complete loads in the package test host on the simulator, so the iPad path is only provable inside an app.
+
+**MCP proxy tests:** `node --test mcp-server/test/`.
 
 ## Branching Strategy
 
