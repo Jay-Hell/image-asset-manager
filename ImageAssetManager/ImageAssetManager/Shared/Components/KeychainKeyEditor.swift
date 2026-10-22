@@ -11,6 +11,8 @@ struct KeychainKeyEditor: View {
     let helperText: String
     let footerText: String
     let removalMessage: String
+    /// Called after the key is saved or removed (the set of usable providers just changed).
+    var onKeyChanged: (() -> Void)?
 
     @State private var apiKey: String = ""
     @State private var isKeyStored: Bool = false
@@ -84,6 +86,7 @@ struct KeychainKeyEditor: View {
             apiKey = ""
             saveError = nil
             saveMessage = "API key saved."
+            onKeyChanged?()
         } catch {
             saveMessage = nil
             saveError = error.localizedDescription
@@ -95,5 +98,6 @@ struct KeychainKeyEditor: View {
         isKeyStored = false
         apiKey = ""
         saveMessage = nil
+        onKeyChanged?()
     }
 }

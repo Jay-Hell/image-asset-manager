@@ -49,6 +49,30 @@ public final class AppDatabase: Sendable {
                 """)
         }
 
+        migrator.registerMigration("v9_refused_spend") { db in
+            // A provider charged for an image the library then refused to store (unsupported or
+            // mismatched content). There is no asset to hang a spend_log row on (asset_id is NOT NULL
+            // and App Store 1.0.x decodes spend_log with a non-optional asset_id), so the charge goes
+            // in its own table. Additive: 1.0.x ignores both the table and the view.
+            try db.create(table: "refused_spend") { t in
+                t.primaryKey("id", .text)
+                t.column("provider_id", .text).notNull()
+                t.column("model_id", .text)
+                t.column("estimated_cost", .double)
+                t.column("actual_cost", .double)
+                t.column("reason", .text).notNull()
+                t.column("timestamp", .text).notNull()
+            }
+            try db.create(index: "refused_spend_timestamp", on: "refused_spend", columns: ["timestamp"])
+            // Every spend figure reads this view, so refused charges count in the totals.
+            try db.execute(sql: """
+                CREATE VIEW spend_entries AS
+                SELECT asset_id, provider_id, estimated_cost, actual_cost, timestamp FROM spend_log
+                UNION ALL
+                SELECT NULL, provider_id, estimated_cost, actual_cost, timestamp FROM refused_spend
+                """)
+        }
+
         return migrator
     }
 
@@ -397,6 +421,7 @@ public final class AppDatabase: Sendable {
             try db.execute(sql: "DELETE FROM prompt_refinements")
             try db.execute(sql: "DELETE FROM asset_usage")
             try db.execute(sql: "DELETE FROM spend_log")
+            try db.execute(sql: "DELETE FROM refused_spend")
             try db.execute(sql: "DELETE FROM prompt_asset")
             try db.execute(sql: "DELETE FROM asset_references")
             try db.execute(sql: "DELETE FROM reference_entries")

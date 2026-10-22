@@ -9,7 +9,7 @@ extension AppDatabase {
                 COALESCE(SUM(estimated_cost), 0) AS total_estimated,
                 COALESCE(SUM(actual_cost), 0)    AS total_actual,
                 COUNT(*)                          AS generation_count
-            FROM spend_log
+            FROM spend_entries
             WHERE timestamp >= ? AND timestamp < ?
             """
         let args: StatementArguments = [since, until]
@@ -37,7 +37,7 @@ extension AppDatabase {
                 strftime('\(fmt)', timestamp) AS bucket,
                 COALESCE(SUM(estimated_cost), 0) AS estimated,
                 COALESCE(SUM(actual_cost), 0)    AS actual
-            FROM spend_log
+            FROM spend_entries
             WHERE timestamp >= ? AND timestamp < ?
             GROUP BY bucket
             ORDER BY bucket
@@ -62,7 +62,7 @@ extension AppDatabase {
                 provider_id,
                 COALESCE(SUM(estimated_cost), 0) AS total_estimated,
                 COUNT(*) AS generation_count
-            FROM spend_log
+            FROM spend_entries
             WHERE timestamp >= ? AND timestamp < ?
             GROUP BY provider_id
             ORDER BY total_estimated DESC
@@ -88,7 +88,7 @@ extension AppDatabase {
                 p.name AS project_name,
                 COALESCE(SUM(sl.estimated_cost), 0) AS total_estimated,
                 COUNT(*) AS generation_count
-            FROM spend_log sl
+            FROM spend_entries sl
             LEFT JOIN assets a ON a.id = sl.asset_id
             LEFT JOIN projects p ON p.id = a.project_id
             WHERE sl.timestamp >= ? AND sl.timestamp < ?

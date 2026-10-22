@@ -15,7 +15,8 @@ struct OpenRouterSettingsSection: View {
             account: OpenRouterProvider.keychainAccount,
             helperText: "Get your key at openrouter.ai. Serves every image tier and any OpenRouter image model by name. Prompts and reference images go to openrouter.ai under your own key. Stored in macOS Keychain only — never uploaded to iCloud.",
             footerText: "Optional. With both keys set, Google is used first.",
-            removalMessage: "The OpenRouter API key will be removed from Keychain."
+            removalMessage: "The OpenRouter API key will be removed from Keychain.",
+            onKeyChanged: { Task { await ProviderKeyChange.refresh() } }
         )
         Section {
             HStack(spacing: 10) {

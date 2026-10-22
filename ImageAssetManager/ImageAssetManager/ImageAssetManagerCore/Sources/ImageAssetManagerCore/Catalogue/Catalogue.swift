@@ -144,6 +144,18 @@ public struct Catalogue: Sendable, Equatable {
         return retired.first { $0.id == id }?.displayName
     }
 
+    /// Whether every image tier has a route this install can use: a compiled provider that also
+    /// has a key here. Parse checks the file on its own terms; this checks it against the install,
+    /// so a file whose routes are all to a provider with no key is refused and never replaces a cache.
+    public func requireUsable(withKeysFor providers: Set<String>) throws {
+        for tier in Catalogue.requiredImageTiers {
+            let usable = routes(media: "image", tier: tier).contains {
+                Catalogue.compiledProviders.contains($0.provider) && providers.contains($0.provider)
+            }
+            guard usable else { throw ParseError.noUsableModel("image/\(tier) for the providers with a key on this install") }
+        }
+    }
+
     // MARK: - Errors
 
     public enum ParseError: Error, Equatable, LocalizedError {

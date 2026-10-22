@@ -160,11 +160,12 @@ public struct OpenRouterProvider: ImageProvider {
         if let refs = references, !refs.isEmpty {
             let cap = record.maxOf("input_references") ?? 0
             guard cap > 0 else { throw ProviderError.badRequest("\(record.id) takes no reference images") }
-            // Base64 data, never URLs (spec §5.9). The item shape is the one unproven part of this
-            // request (spec §10: no authenticated call has been made); it lives in this one place.
+            // Base64 data URLs, never https URLs (spec §5.9). Item shape is OpenRouter's published
+            // one: {"type":"image_url","image_url":{"url":"data:<mime>;base64,<data>"}}.
             body["input_references"] = refs.prefix(cap).map { ref -> [String: Any] in
-                ["b64_json": ref.imageData.base64EncodedString(),
-                 "media_type": MediaType(sniffing: ref.imageData)?.rawValue ?? "image/png"]
+                let mime = MediaType(sniffing: ref.imageData)?.rawValue ?? "image/png"
+                return ["type": "image_url",
+                        "image_url": ["url": "data:\(mime);base64,\(ref.imageData.base64EncodedString())"]]
             }
         }
         return body

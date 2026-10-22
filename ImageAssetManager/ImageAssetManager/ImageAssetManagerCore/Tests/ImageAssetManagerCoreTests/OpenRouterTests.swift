@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 @testable import ImageAssetManagerCore
 
 // MARK: - Fixtures and rigs
@@ -26,6 +27,17 @@ private func okBody(cost: Double? = 0.0336, mime: String? = nil, bytes: String =
     var root: [String: Any] = ["data": [item]]
     if let cost { root["usage"] = ["cost": cost] }
     return try! JSONSerialization.data(withJSONObject: root)
+}
+
+private actor WaitLog {
+    private(set) var values: [TimeInterval] = []
+    func record(_ v: TimeInterval) { values.append(v) }
+}
+
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func next() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; return n }
 }
 
 private let svgBytes = Data(#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="white"/></svg>"#.utf8)
@@ -176,6 +188,53 @@ struct OpenRouterLiveListTests {
         clock.advance(61)
         #expect(await store.refreshAfterModelUnavailable() != nil)
         #expect(session.requests.count == 2)
+    }
+
+    @Test func aFailedLaunchFetchWithNoCacheRetriesAt1And5And30MinutesThenDaily() async throws {
+        // The schedule itself, worked by hand: 60 s, 300 s, 1800 s, then 86 400 s.
+        #expect(OpenRouterModelStore.delay(afterFailures: 1, hasList: false) == 60)
+        #expect(OpenRouterModelStore.delay(afterFailures: 2, hasList: false) == 300)
+        #expect(OpenRouterModelStore.delay(afterFailures: 3, hasList: false) == 1800)
+        #expect(OpenRouterModelStore.delay(afterFailures: 4, hasList: false) == 86_400)
+        // The pair: with a list held, or after a success, it is the daily cadence.
+        #expect(OpenRouterModelStore.delay(afterFailures: 1, hasList: true) == 86_400)
+        #expect(OpenRouterModelStore.delay(afterFailures: 0, hasList: false) == 86_400)
+
+        // And the loop really uses it: three failures, then a success, then the daily wait.
+        let list = try ORFixture.list()
+        let calls = CallCounter()
+        let session = StubSession { _ in calls.next() <= 3 ? (500, Data(), [:]) : (200, list, [:]) }
+        let store = OpenRouterModelStore(directory: makeTempDirectory(), session: session.session)
+        let waits = WaitLog()
+        // Waits are recorded, not served; once four are in, the loop parks until stop() cancels it.
+        store.start(sleep: { seconds in
+            await waits.record(seconds)
+            if await waits.values.count >= 4 { try? await Task.sleep(for: .seconds(60)) }
+        })
+        defer { store.stop() }
+        var spins = 0
+        while await waits.values.count < 4 && spins < 400 { try await Task.sleep(for: .milliseconds(10)); spins += 1 }
+        // Three failures wait 60, 300 and 1800 s; the fourth fetch succeeds, so the wait is a day.
+        #expect(Array(await waits.values.prefix(4)) == [60, 300, 1800, 86_400])
+        #expect(!store.snapshot().isEmpty)
+    }
+
+    @Test func aRequestThatNeedsTheListFetchesItOnDemandWhenNoneIsCached() async throws {
+        let clock = TestClock()
+        let session = StubSession(status: 200, body: try ORFixture.list())
+        let store = OpenRouterModelStore(directory: makeTempDirectory(), session: session.session, now: { clock.now })
+        #expect(await store.refreshIfNotLoaded() != nil)
+        #expect(!store.snapshot().isEmpty)
+        // The pair: with a list held there is no fetch.
+        #expect(await store.refreshIfNotLoaded() == nil)
+        #expect(session.requests.count == 1)
+    }
+
+    @Test func theNotLoadedErrorSaysItIsRetryingNotJustTryAgain() {
+        let message = ResolveError.liveListNotLoaded.localizedDescription
+        #expect(message.contains("not yet loaded"))
+        #expect(message.contains("retrying"))
+        #expect(!message.contains("try again"))
     }
 
     // MARK: prices
@@ -495,8 +554,8 @@ struct OpenRouterRequestTests {
         let body = try #require(session.requests.first?.bodyJSON)
         let refs = try #require(body["input_references"] as? [[String: Any]])
         #expect(refs.count == 1)
-        #expect(refs[0]["b64_json"] as? String == tinyPNGBase64)
-        #expect(refs[0]["media_type"] as? String == "image/png")
+        let itemJSON = String(data: try JSONSerialization.data(withJSONObject: refs[0], options: [.sortedKeys, .withoutEscapingSlashes]), encoding: .utf8)
+        #expect(itemJSON == "{\"image_url\":{\"url\":\"data:image/png;base64,\(tinyPNGBase64)\"},\"type\":\"image_url\"}")
         let raw = String(data: try #require(session.requests.first?.body), encoding: .utf8) ?? ""
         #expect(!raw.contains("http://") && !raw.contains("https://"))
     }
@@ -667,7 +726,7 @@ struct OpenRouterResponseTests {
         let db = try AppDatabase(path: ":memory:")
         let dir = makeTempDirectory()
         let service = GenerationService(database: db, libraryURL: dir, provider: BoundProvider(inner: rig.provider, session: session.session))
-        await #expect(throws: AssetStoreError.self) {
+        await #expect(throws: GenerationServiceError.self) {
             try await service.generate(GenerationService.Request(prompt: "p", model: route.imageModel, aspectRatio: .square, width: 1, height: 1))
         }
         let assets = (try? FileManager.default.contentsOfDirectory(atPath: dir.appending(path: "assets").path)) ?? []
@@ -715,6 +774,19 @@ private struct ScriptedProvider: ImageProvider {
     }
 }
 
+private struct FixedProvider: ImageProvider {
+    let providerID: String
+    let image: GeneratedImage
+    var displayName: String { providerID }
+    var availableModels: [ImageModel] { [] }
+    var supportedAspectRatios: [AspectRatio] { [.square] }
+    var supportsReferenceImages: Bool { false }
+    var maxReferenceImages: Int { 0 }
+    var supportedReferenceRoles: [ReferenceRole] { [] }
+    func estimateCost(_ params: GenerationParams) -> Decimal { params.model.costPerImage }
+    func generate(_ params: GenerationParams, references: [ReferenceInput]?) async throws -> GeneratedImage { image }
+}
+
 @Suite("RouteExecutor")
 struct RouteExecutorTests {
     private func routes(catalogue: Catalogue? = nil, rig: ORRig) throws -> [Resolution] {
@@ -741,6 +813,82 @@ struct RouteExecutorTests {
         #expect(outcome.image.modelUsed == "google/gemini-3.1-flash-lite-image")   // the model that served, not the one asked
         #expect(outcome.image.estimatedCostGBP == list[1].estimateGBP)
         #expect(outcome.fallbackNotes.count == 1)
+    }
+
+    // The path the MCP uses: GenerationService with a router and routes. The executor tests above call
+    // the executor directly, so a service that ignored `router` would pass them all.
+    @Test func t16_theServiceFallsBackAndStoresWhatServedNotWhatWasAsked() async throws {
+        let rig = try await ORRig.make()
+        let list = try routes(rig: rig)
+        let google = ScriptedProvider(providerID: "nano_banana", failure: .modelUnavailable("gemini-3.1-flash-lite-image"))
+        let openRouter = ScriptedProvider(providerID: "openrouter", failure: nil)
+        let db = try AppDatabase(path: ":memory:")
+        let service = GenerationService(
+            database: db, libraryURL: makeTempDirectory(), provider: google,
+            router: RouteExecutor(providers: [google, openRouter]))
+        let outcome = try await service.generate(GenerationService.Request(
+            prompt: "p", model: list[0].imageModel, aspectRatio: .square, width: 1, height: 1, routes: list))
+
+        #expect(google.script.count == 1)                       // route 1 was tried, once
+        #expect(openRouter.script.count == 1)                   // and route 2 served
+        let row = try #require(try await db.fetchAsset(id: outcome.assetID))
+        #expect(row.providerID == "openrouter")
+        #expect(row.modelID == "google/gemini-3.1-flash-lite-image")
+        let expected = Double(truncating: list[1].estimateGBP as NSDecimalNumber)
+        #expect(expected > 0)
+        #expect(abs(try #require(row.estimatedCost) - expected) < 1e-9)
+        let spend = try #require(try await db.fetchRecentSpendLog(limit: 1).first)
+        #expect(spend.providerID == "openrouter")
+        #expect(abs(try #require(spend.estimatedCost) - expected) < 1e-9)
+        #expect(outcome.providerID == "openrouter")
+        #expect(outcome.fallbackNotes.count == 1)
+
+        // The pair: without routes the service calls its one provider and does not move.
+        let single = GenerationService(
+            database: db, libraryURL: makeTempDirectory(), provider: google,
+            router: RouteExecutor(providers: [google, openRouter]))
+        await #expect(throws: ProviderError.self) {
+            try await single.generate(GenerationService.Request(
+                prompt: "p", model: list[0].imageModel, aspectRatio: .square, width: 1, height: 1))
+        }
+        #expect(openRouter.script.count == 1)
+    }
+
+    @Test func aPaidImageTheLibraryRefusesStillRecordsItsSpendAndSaysSo() async throws {
+        // Declared SVG, bytes are a PNG: AssetStore refuses. Both providers charge before that.
+        for providerID in ["nano_banana", "openrouter"] {
+            let paid = GeneratedImage(
+                data: Data(base64Encoded: tinyPNGBase64)!, format: "svg", actualCost: Decimal(string: "0.05"),
+                providerUsed: providerID, mimeType: "image/svg+xml")
+            let db = try AppDatabase(path: ":memory:")
+            let dir = makeTempDirectory()
+            let service = GenerationService(database: db, libraryURL: dir, provider: FixedProvider(providerID: providerID, image: paid))
+            let model = ImageModel(id: "some-model-aa", displayName: "M", supportedAspectRatios: [], costPerImage: Decimal(string: "0.03")!)
+            do {
+                _ = try await service.generate(GenerationService.Request(prompt: "p", model: model, aspectRatio: .square, width: 1, height: 1))
+                Issue.record("\(providerID): the refusal should have thrown")
+            } catch let error as GenerationServiceError {
+                let message = error.localizedDescription
+                #expect(message.contains("refused"))
+                #expect(message.contains("0.0500"))             // the actual cost, in the message
+                #expect(message.contains("recorded in Spend"))
+            }
+            // Nothing stored …
+            let assets = (try? FileManager.default.contentsOfDirectory(atPath: dir.appending(path: "assets").path)) ?? []
+            #expect(assets.isEmpty)
+            // … and the charge recorded, with the actual cost, and counted in the totals.
+            let rows = try await db.read { db in
+                try Row.fetchAll(db, sql: "SELECT provider_id, model_id, estimated_cost, actual_cost FROM refused_spend")
+                    .map { ($0["provider_id"] as String?, $0["model_id"] as String?, $0["actual_cost"] as Double?) }
+            }
+            #expect(rows.count == 1)
+            #expect(rows.first?.0 == providerID)
+            #expect(rows.first?.1 == "some-model-aa")
+            #expect(abs((rows.first?.2 ?? 0) - 0.05) < 1e-9)
+            let summary = try await db.fetchSpendSummary(since: "2000-01-01", until: "2999-01-01")
+            #expect(abs(summary.totalActual - 0.05) < 1e-9)
+            #expect(summary.totalEstimated > 0)
+        }
     }
 
     @Test func t16_theOtherTwoConditionsAlsoFallBack() async throws {

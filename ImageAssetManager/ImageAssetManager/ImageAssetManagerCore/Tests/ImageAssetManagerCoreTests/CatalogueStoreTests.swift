@@ -44,8 +44,9 @@ private struct Rig {
     let clock = TestClock()
     let store: CatalogueStore
 
-    init(bundledRevision: Int = 1, prepare: (URL) throws -> Void = { _ in }) throws {
+    init(bundledRevision: Int = 1, keys: Set<String>? = nil, prepare: (URL) throws -> Void = { _ in }) throws {
         try prepare(directory)
+        let configured: (@Sendable () -> Set<String>)? = keys.map { fixed in { @Sendable in fixed } }
         let bundled = try Catalogue.parse(try revisionData(bundledRevision))
         store = CatalogueStore(
             bundled: bundled,
@@ -53,7 +54,8 @@ private struct Rig {
             remoteURL: URL(string: "https://example.test/models.json")!,
             session: remote.stub.session,
             build: 0,
-            now: { [clock] in clock.now }
+            now: { [clock] in clock.now },
+            configuredProviders: configured
         )
     }
 
@@ -106,6 +108,64 @@ struct CatalogueStoreTests {
         }
         #expect(rig.store.status().revision == 7)
         #expect(rig.store.status().source == .remote)
+    }
+
+    // MARK: - Usable on this install (pass B fix, ruling 2)
+
+    /// A file whose image routes all go to OpenRouter: valid on its own, unusable with only a Google key.
+    private func openRouterOnly(_ revision: Int) throws -> Data {
+        try revisionData(revision) { root in
+            var media = root["media"] as! [String: Any]
+            var image = media["image"] as! [String: Any]
+            var tiers = image["tiers"] as! [String: Any]
+            for (name, routes) in tiers {
+                tiers[name] = (routes as! [[String: Any]]).filter { ($0["provider"] as? String) == "openrouter" }
+            }
+            image["tiers"] = tiers
+            media["image"] = image
+            root["media"] = media
+        }
+    }
+
+    @Test func aGoogleOnlyInstallRejectsAnOpenRouterOnlyCatalogueAndKeepsItsCache() async throws {
+        let rig = try Rig(keys: ["nano_banana"])
+        rig.remote.serve(try revisionData(2))
+        #expect(await rig.store.refresh() == .updated(revision: 2))
+        let before = try Data(contentsOf: rig.cacheFile)
+
+        rig.remote.serve(try openRouterOnly(3))
+        guard case .failed = await rig.store.refresh() else {
+            Issue.record("a file with no route this install can use must be refused")
+            return
+        }
+        #expect(rig.store.status().revision == 2)
+        #expect(try Data(contentsOf: rig.cacheFile) == before)
+        // An override is held to the same rule.
+        #expect(throws: Catalogue.ParseError.self) { try rig.store.loadOverride(try openRouterOnly(4)) }
+        #expect(rig.store.status().source == .remote)
+    }
+
+    @Test func anInstallWithAnOpenRouterKeyAcceptsTheSameCatalogue() async throws {
+        let rig = try Rig(keys: ["nano_banana", "openrouter"])
+        rig.remote.serve(try openRouterOnly(3))
+        #expect(await rig.store.refresh() == .updated(revision: 3))
+        #expect(rig.store.status().revision == 3)
+
+        let orOnly = try Rig(keys: ["openrouter"])
+        orOnly.remote.serve(try openRouterOnly(3))
+        #expect(await orOnly.store.refresh() == .updated(revision: 3))
+    }
+
+    @Test func addingAKeyRefreshesTheCatalogueAtOnce() async throws {
+        let rig = try Rig(keys: ["nano_banana"])
+        rig.remote.serve(try openRouterOnly(3))
+        await rig.store.refresh()
+        #expect(rig.store.status().revision == 1)       // refused
+        let requests = rig.remote.requests.count
+        // The key is added in Settings: the next fetch is on demand, not a day away.
+        rig.remote.serve(try revisionData(4))
+        #expect(await rig.store.refreshAfterKeyChange() == .updated(revision: 4))
+        #expect(rig.remote.requests.count == requests + 1)
     }
 
     // MARK: - T4: a failed fetch changes nothing

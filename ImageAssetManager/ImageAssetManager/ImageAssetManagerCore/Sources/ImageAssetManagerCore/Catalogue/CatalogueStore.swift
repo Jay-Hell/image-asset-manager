@@ -41,7 +41,17 @@ public final class CatalogueStore: @unchecked Sendable {
     /// A model-unavailable error forces at most one refresh in this window.
     public static let forcedRefreshWindow: TimeInterval = 60
 
-    public static let shared = CatalogueStore()
+    public static let shared = CatalogueStore(configuredProviders: CatalogueStore.providersWithKeys)
+
+    /// Providers that have a key on this install. Reads the Keychain; tests inject their own.
+    @Sendable public static func providersWithKeys() -> Set<String> {
+        var found: Set<String> = []
+        if (try? KeychainService.retrieve(service: NanaBananaProvider.keychainService, account: NanaBananaProvider.keychainAccount)) != nil {
+            found.insert("nano_banana")
+        }
+        if OpenRouterProvider.hasKey() { found.insert(OpenRouterProvider.id) }
+        return found
+    }
 
     // MARK: - State
 
@@ -60,6 +70,9 @@ public final class CatalogueStore: @unchecked Sendable {
     private let session: URLSession
     private let build: Int
     private let now: @Sendable () -> Date
+    /// Nil means no key check (tests). Empty means a fresh install with no key at all, where
+    /// nothing is usable whatever the file says, so the file is judged on its own terms.
+    private let configuredProviders: (@Sendable () -> Set<String>)?
 
     private struct Meta: Codable {
         var etag: String?
@@ -74,8 +87,10 @@ public final class CatalogueStore: @unchecked Sendable {
         remoteURL: URL = CatalogueStore.remoteURL,
         session: URLSession = .shared,
         build: Int = CatalogueStore.runningBuild,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        configuredProviders: (@Sendable () -> Set<String>)? = nil
     ) {
+        self.configuredProviders = configuredProviders
         self.bundled = bundled ?? Catalogue.bundledCopy(build: build)
         self.directory = directory ?? CatalogueStore.defaultDirectory()
         self.remoteURL = remoteURL
@@ -161,6 +176,7 @@ public final class CatalogueStore: @unchecked Sendable {
     /// Nothing is changed if it does not validate.
     public func loadOverride(_ data: Data) throws {
         let parsed = try Catalogue.parse(data, build: build)
+        try checkUsable(parsed)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: overrideFile, options: .atomic)
         lock.lock(); override = parsed; lock.unlock()
@@ -216,6 +232,18 @@ public final class CatalogueStore: @unchecked Sendable {
         return await refresh()
     }
 
+    private func checkUsable(_ catalogue: Catalogue) throws {
+        guard let keys = configuredProviders?(), !keys.isEmpty else { return }
+        try catalogue.requireUsable(withKeysFor: keys)
+    }
+
+    /// A key was added or removed in Settings: fetch the catalogue now, outside the 24 h cadence
+    /// and the forced-refresh window, since the set of usable files has just changed.
+    @discardableResult
+    public func refreshAfterKeyChange() async -> CatalogueRefreshResult {
+        await refresh()
+    }
+
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock(); defer { lock.unlock() }
         return body()
@@ -230,6 +258,7 @@ public final class CatalogueStore: @unchecked Sendable {
         let parsed: Catalogue
         do {
             parsed = try Catalogue.parse(data, build: build)
+            try checkUsable(parsed)
         } catch {
             return fail("Fetched catalogue rejected: \(error.localizedDescription)")
         }
@@ -288,6 +317,15 @@ public final class CatalogueStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         loopTask?.cancel()
         loopTask = nil
+    }
+}
+
+/// A key was added or removed in Settings: the providers this install can use have changed, so
+/// fetch the catalogue and the OpenRouter list now rather than at the next scheduled time.
+public enum ProviderKeyChange {
+    public static func refresh(catalogue: CatalogueStore = .shared, live: OpenRouterModelStore = .shared) async {
+        await catalogue.refreshAfterKeyChange()
+        await live.refresh()
     }
 }
 

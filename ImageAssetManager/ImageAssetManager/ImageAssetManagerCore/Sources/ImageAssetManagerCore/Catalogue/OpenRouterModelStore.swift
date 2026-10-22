@@ -158,16 +158,40 @@ public final class OpenRouterModelStore: @unchecked Sendable {
 
     // MARK: - Timer
 
-    public func start() {
+    /// After a failed fetch with no list held: retry after 1 min, 5 min, 30 min, then the 24 h cadence.
+    public static let retryDelays: [TimeInterval] = [60, 5 * 60, 30 * 60]
+
+    /// The wait before the next scheduled fetch. `failures` counts consecutive failed fetches.
+    /// With a list held (or after a success) the cadence is the 24 h interval.
+    public static func delay(afterFailures failures: Int, hasList: Bool) -> TimeInterval {
+        guard !hasList, failures > 0, failures <= retryDelays.count else { return refreshInterval }
+        return retryDelays[failures - 1]
+    }
+
+    public func start() { start(sleep: { try? await Task.sleep(for: .seconds($0)) }) }
+
+    /// `sleep` is injectable so a test can run the schedule without waiting.
+    func start(sleep: @escaping @Sendable (TimeInterval) async -> Void) {
         lock.lock(); defer { lock.unlock() }
         guard loopTask == nil else { return }
         loopTask = Task { [weak self] in
+            var failures = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
-                try? await Task.sleep(for: .seconds(Self.refreshInterval))
+                if case .failed = await self.refresh() { failures += 1 } else { failures = 0 }
+                let wait = Self.delay(afterFailures: failures, hasList: !self.snapshot().isEmpty)
+                await sleep(wait)
             }
         }
+    }
+
+    /// A request needs an OpenRouter route and no list is cached: fetch now rather than wait for
+    /// the schedule. Rate-limited to one a minute, like the 404 refresh. Nil when a list is held
+    /// or the window has not elapsed.
+    @discardableResult
+    public func refreshIfNotLoaded() async -> OpenRouterRefreshResult? {
+        guard snapshot().isEmpty else { return nil }
+        return await refreshAfterModelUnavailable()
     }
 
     public func stop() {

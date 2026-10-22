@@ -158,6 +158,8 @@ extension MCPServer {
         )
 
         var outcomes: [[String: Any]] = []
+        var servedCost = 0.0
+        var servedModels: [String] = []
         for _ in 0..<count {
             let request = GenerationService.Request(
                 prompt: basePrompt,
@@ -174,6 +176,10 @@ extension MCPServer {
                 routes: routes
             )
             let outcome = try await service.generate(request)
+            // What was actually served, not what the first route would have cost.
+            servedCost += outcome.estimatedCost
+            if !servedModels.contains(outcome.modelID) { servedModels.append(outcome.modelID) }
+            for note in outcome.fallbackNotes where !notes.contains(note) { notes.append(note) }
             outcomes.append([
                 "asset_id": outcome.assetID,
                 "file_path": outcome.fileURL.path(percentEncoded: false),
@@ -186,12 +192,12 @@ extension MCPServer {
 
         return [
             "generated": outcomes,
-            "total_cost_gbp": doubleValue(subtotal),
+            "total_cost_gbp": servedCost,
             "cost_breakdown": [
-                "model": effectiveModel.id,
+                "model": servedModels.joined(separator: ", "),
                 "count": count,
-                "unit_cost_gbp": doubleValue(unitCost),
-                "subtotal_gbp": doubleValue(subtotal),
+                "unit_cost_gbp": servedCost / Double(count),
+                "subtotal_gbp": servedCost,
             ] as [String: Any],
             "notes": notes,
         ] as [String: Any]

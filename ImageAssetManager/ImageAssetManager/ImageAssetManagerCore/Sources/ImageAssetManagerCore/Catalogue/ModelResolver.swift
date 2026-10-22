@@ -117,7 +117,7 @@ extension ResolveError: LocalizedError {
             let list = s.isEmpty ? "none; this model lists no output format" : s.joined(separator: ", ")
             return "output format '\(r)' is not supported by this model (supported: \(list))"
         case .liveListNotLoaded:
-            return "OpenRouter's model list has not loaded yet; check the connection and try again"
+            return "OpenRouter's model list not yet loaded; retrying in the background (after 1, 5 and 30 minutes, then daily)"
         }
     }
 }
