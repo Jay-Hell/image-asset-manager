@@ -24,7 +24,7 @@ struct SettingsView: View {
                 title: "Nano Banana API Key",
                 service: NanaBananaProvider.keychainService,
                 account: NanaBananaProvider.keychainAccount,
-                helperText: "Get your key at aistudio.google.com. Works for all four image models (Fast, Standard, Pro, With References). Stored in macOS Keychain only — never uploaded to iCloud.",
+                helperText: "Get your key at aistudio.google.com. Works for every Gemini image model in the model catalogue (Fast, Standard, Pro). Stored in macOS Keychain only — never uploaded to iCloud.",
                 footerText: "Required for image generation.",
                 removalMessage: "The Nano Banana API key will be removed from Keychain."
             )
@@ -38,6 +38,9 @@ struct SettingsView: View {
                 footerText: "Required for AI prompt refinement.",
                 removalMessage: "The Anthropic API key will be removed from Keychain."
             )
+
+            // MARK: Model catalogue
+            ModelCatalogueSettingsSection()
 
             // MARK: Clients
             ClientsSettingsSection()

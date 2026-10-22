@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageAssetManagerCore
 #if os(macOS)
 import AppKit
 #endif
@@ -21,6 +22,8 @@ struct ImageAssetManagerApp: App {
         WindowGroup {
             ContentView()
                 .environment(env)
+                // Check the model catalogue now and every 24 hours while the app runs.
+                .task { CatalogueStore.shared.start() }
                 #if os(macOS)
                 .task { await startMCPServer() }
                 #endif

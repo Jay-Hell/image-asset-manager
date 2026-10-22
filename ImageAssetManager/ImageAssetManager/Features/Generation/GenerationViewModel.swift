@@ -78,30 +78,38 @@ final class GenerationViewModel {
 
     var currentModel: ImageModel? {
         guard let provider = currentProvider else { return nil }
-        return provider.availableModels.first { $0.id == selectedModelID }
+        // A stored ID for a retired model (old project default, old asset) reads as its replacement.
+        let wanted = selectedModelID.map { CatalogueStore.shared.liveModelID(for: $0) }
+        return provider.availableModels.first { $0.id == wanted }
             ?? provider.availableModels.first
     }
 
-    /// The model that will actually be used for the next generation.
-    /// Auto-routes to the reference-capable model when refs are attached and the
-    /// user-selected model can't handle them.
-    var effectiveModel: ImageModel? {
-        guard let provider = currentProvider, let selected = currentModel else { return nil }
-        if !confirmedReferenceIDs.isEmpty
-            && provider is NanaBananaProvider
-            && !NanaBananaProvider.supportsReferences(modelID: selected.id) {
-            return provider.availableModels.first { $0.id == NanaBananaProvider.ModelID.geminiWithRefs } ?? selected
+    /// The route for the next generation, from the shared resolver (the same function the
+    /// MCP uses). The panel never picks a model itself: it hands the resolver the
+    /// selection and what is attached, and uses what comes back.
+    private func resolveCurrent() throws -> Resolution {
+        guard let provider = currentProvider, let selected = currentModel else {
+            throw ResolveError.unknownModel(selectedModelID ?? "")
         }
-        return selected
+        return try ModelResolver.resolveSelection(
+            provider: provider.providerID,
+            modelID: selected.id,
+            referenceCount: confirmedReferenceIDs.count,
+            aspectRatio: aspectRatio.apiRatio(width: resolvedWidth, height: resolvedHeight),
+            catalogue: CatalogueStore.shared.snapshot(),
+            providers: Set(availableProviders.map(\.providerID))
+        )
     }
 
+    /// The model that will actually be used for the next generation. Reroutes to a
+    /// reference-capable model (with a note) when refs are attached and the selection
+    /// can't take them.
+    var effectiveModel: ImageModel? { try? resolveCurrent().imageModel }
+
     /// Non-nil when the generation will use a different model than the user selected
-    /// (e.g. auto-routing to "With References" because refs are attached).
+    /// (e.g. rerouting because refs are attached), or when no route is available.
     var modelRouteNote: String? {
-        guard let selected = currentModel, let effective = effectiveModel, selected.id != effective.id else {
-            return nil
-        }
-        return "References attached — using \(effective.displayName)"
+        do { return try resolveCurrent().note } catch { return error.localizedDescription }
     }
 
     var estimatedCost: Decimal {
@@ -187,7 +195,8 @@ final class GenerationViewModel {
     private func loadProjectDependencies(projectID: String) async {
         if let project = projects.first(where: { $0.id == projectID }) {
             if let pid = project.defaultProviderID { selectedProviderID = pid }
-            if let mid = project.defaultModelID { selectedModelID = mid }
+            // A default that points at a retired model moves to its replacement.
+            if let mid = project.defaultModelID { selectedModelID = CatalogueStore.shared.liveModelID(for: mid) }
         }
 
         async let refsResult = (try? database.fetchActiveReferenceEntries(projectID: projectID)) ?? []

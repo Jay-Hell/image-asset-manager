@@ -22,7 +22,7 @@ extension GenerationViewModel {
         }
         if asset.providerID != "imported" {
             selectedProviderID = asset.providerID
-            selectedModelID = asset.modelID
+            selectedModelID = CatalogueStore.shared.liveModelID(for: asset.modelID)
         }
         if let ratioStr = asset.aspectRatio, let ar = AspectRatio(rawValue: ratioStr) {
             aspectRatio = ar
