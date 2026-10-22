@@ -77,6 +77,51 @@ struct LibraryBackupTests {
         #expect(fm.fileExists(atPath: fixture.backupsURL.appending(path: "notes.txt").path(percentEncoded: false)))
     }
 
+    /// Five backups named later than now (a clock once set ahead, or skew between devices) must
+    /// not push out the one just taken. Names worked by hand: ours is library-2026…, theirs
+    /// library-2099010{1…5}…; ours plus the four newest of theirs stay.
+    @Test func rotationNeverDeletesTheBackupJustTaken() async throws {
+        let fixture = try V7LibraryFixture()
+        try FileManager.default.createDirectory(at: fixture.backupsURL, withIntermediateDirectories: true)
+        let later = (1...5).map { "library-2099010\($0)T000000000Z.db" }
+        for name in later {
+            try Data("later".utf8).write(to: fixture.backupsURL.appending(path: name))
+        }
+
+        _ = try AppDatabase(path: fixture.databasePath)
+
+        let files = try fixture.backupFiles()
+        #expect(files.count == 5)
+        #expect(files.filter { $0.hasPrefix("library-2099") } == Array(later.suffix(4)))
+        let ours = try #require(files.first { !$0.hasPrefix("library-2099") })
+        let backup = try DatabaseQueue(path: fixture.backupsURL.appending(path: ours).path(percentEncoded: false))
+        let assetCount = try await backup.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM assets") }
+        #expect(assetCount == 7)
+        try backup.close()
+    }
+
+    /// A backup killed part-way leaves its hidden partial file (and SQLite's sidecars) behind
+    /// under a name no later run reuses. The next backup sweeps them; other files stay.
+    @Test func partialFilesFromAKilledBackupAreSweptUp() async throws {
+        let fixture = try V7LibraryFixture()
+        let fm = FileManager.default
+        try fm.createDirectory(at: fixture.backupsURL, withIntermediateDirectories: true)
+        let stale = [".library-20260101T000000000Z.db.partial",
+                     ".library-20260101T000000000Z.db.partial-wal",
+                     ".library-20260101T000000000Z.db.partial-shm",
+                     ".library-20260101T000000000Z.db.partial-journal"]
+        for name in stale {
+            try Data("half".utf8).write(to: fixture.backupsURL.appending(path: name))
+        }
+        try Data("keep".utf8).write(to: fixture.backupsURL.appending(path: ".notes"))
+
+        _ = try AppDatabase(path: fixture.databasePath)
+
+        let remaining = try fm.contentsOfDirectory(atPath: fixture.backupsURL.path(percentEncoded: false)).sorted()
+        #expect(remaining.filter { $0.hasPrefix(".") } == [".notes"])
+        #expect(try fixture.backupFiles().count == 1)
+    }
+
     @Test func aFailedBackupStopsTheMigration() async throws {
         let fixture = try V7LibraryFixture()
         // A file where the Backups folder should be: the folder cannot be created.

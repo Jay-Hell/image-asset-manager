@@ -22,7 +22,8 @@ enum LibraryBackup {
         // Written under a hidden name and renamed when complete, so a half-made backup is
         // never mistaken for a good one (or counted by rotation).
         let partialURL = folder.appending(path: ".\(name).partial")
-        try? fm.removeItem(at: partialURL)
+        sweepPartials(folder: folder)
+        defer { sweepPartials(folder: folder) }   // SQLite can leave -shm beside a closed partial
         do {
             let destination = try DatabaseQueue(path: partialURL.path(percentEncoded: false))
             try source.backup(to: destination)
@@ -37,17 +38,29 @@ enum LibraryBackup {
             throw error
         }
 
-        rotate(folder: folder)
+        rotate(folder: folder, keeping: name)
         return finalURL
     }
 
-    /// Deletes all but the newest `keep` backups. Only files this type names are touched.
-    /// Best effort: the new backup already exists, so a failure here must not block the library.
-    static func rotate(folder: URL) {
+    /// Deletes all but the newest `keep` backups, never `newest` — the one just taken, which a
+    /// later-named file (a clock once set ahead, or skew between devices) would otherwise push
+    /// out. Only files this type names are touched. Best effort: the new backup already
+    /// exists, so a failure here must not block the library.
+    static func rotate(folder: URL, keeping newest: String) {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: folder.path(percentEncoded: false)) else { return }
-        let backups = names.filter { $0.hasPrefix("library-") && $0.hasSuffix(".db") }.sorted()
-        for name in backups.dropLast(keep) {
+        let others = names.filter { $0.hasPrefix("library-") && $0.hasSuffix(".db") && $0 != newest }.sorted()
+        for name in others.dropLast(keep - 1) {
+            try? fm.removeItem(at: folder.appending(path: name))
+        }
+    }
+
+    /// Removes hidden partial files (and their SQLite sidecars) left by a backup that never
+    /// finished. A complete backup is never named like this.
+    static func sweepPartials(folder: URL) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: folder.path(percentEncoded: false)) else { return }
+        for name in names where name.hasPrefix(".library-") && name.contains(".db.partial") {
             try? fm.removeItem(at: folder.appending(path: name))
         }
     }
