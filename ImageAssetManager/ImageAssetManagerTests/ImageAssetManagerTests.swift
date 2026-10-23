@@ -21,4 +21,11 @@ struct ImageAssetManagerTests {
         #expect(TestHostIsolation.isInsideTemporaryDirectory(opened), "host opened \(opened.path(percentEncoded: false))")
         #expect(opened.lastPathComponent.hasPrefix("ImageAssetManager-TestHost-"))
     }
+
+    /// App Store Connect asks the export-compliance question on every upload unless the bundle says
+    /// it uses only exempt encryption. The app uses Apple's own: HTTPS, the Keychain, CryptoKit hashing.
+    @Test func theBundleDeclaresOnlyExemptEncryption() {
+        let declared = Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption")
+        #expect(declared as? Bool == false, "ITSAppUsesNonExemptEncryption is \(String(describing: declared))")
+    }
 }
