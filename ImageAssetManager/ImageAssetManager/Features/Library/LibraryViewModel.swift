@@ -288,17 +288,20 @@ final class LibraryViewModel {
 
     func setHidden(_ ids: Set<String>, hidden: Bool) async throws {
         try await database.setHidden(assetIDs: Array(ids), hidden: hidden)
-        if !hidden { return }
-        // After hiding, deselect and exit select mode if all selected items are now hidden
-        selectedAssetIDs.subtract(ids)
-        if selectedAssetIDs.isEmpty { isSelectMode = false }
-        if let selected = selectedAssetID, ids.contains(selected) {
-            selectedAssetID = nil
-            inspectorDetail = nil
+        if hidden {
+            // After hiding, deselect and exit select mode if all selected items are now hidden
+            selectedAssetIDs.subtract(ids)
+            if selectedAssetIDs.isEmpty { isSelectMode = false }
+            if let selected = selectedAssetID, ids.contains(selected) {
+                selectedAssetID = nil
+                inspectorDetail = nil
+            }
         }
+        // Hiding and unhiding both change the counts, which leave hidden assets out.
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
         await loadAssets()
     }
 
@@ -379,6 +382,7 @@ final class LibraryViewModel {
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
         await loadAssets()
         if selectedAssetID == assetID {
             await selectAsset(assetID)
