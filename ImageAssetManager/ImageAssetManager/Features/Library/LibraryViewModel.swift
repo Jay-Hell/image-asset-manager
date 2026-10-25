@@ -127,8 +127,8 @@ final class LibraryViewModel {
                 displayedVariantFamilies = try await database.fetchVariantFamilies()
 
             case .client(let cid):
-                let clientProjectIDs = projects.filter { $0.clientID == cid }.map(\.id)
-                assets = try await database.searchAssets(projectIDs: clientProjectIDs, searchText: searchArg, showHidden: capturedShowHidden)
+                // By client in the query, never as a project list: an empty list means Unfiled.
+                assets = try await database.searchAssets(clientID: cid, searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = []
 
             case .project(let pid):

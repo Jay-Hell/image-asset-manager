@@ -158,6 +158,40 @@ struct SidebarTests {
         #expect(try await db.searchAssets(projectIDs: [p]).map(\.id) == ["a2"])
     }
 
+    /// Worked by hand. u1 is unfiled. C0 has no projects. C1 has P1 (a1, and a5 hidden).
+    /// C2 has P2a (a2) and P2b (a2, a3). Loose (no client) has a4.
+    /// Grids: C0 none; C1 a1 (a1, a5 with hidden shown); C2 a2, a3 (a2 once). Counts agree: C0 0, C1 1, C2 2.
+    @Test func aClientsGridHoldsItsProjectsAssetsAndAClientWithNoneShowsNone() async throws {
+        let db = try makeDB()
+        for id in ["u1", "a1", "a2", "a3", "a4"] { try await addAsset(db, id) }
+        try await addAsset(db, "a5", hidden: true)
+        let c0 = try await db.createClient(name: "C0").client.id
+        let c1 = try await db.createClient(name: "C1").client.id
+        let c2 = try await db.createClient(name: "C2").client.id
+        let p1 = try await addProject(db, "P1", client: c1)
+        let p2a = try await addProject(db, "P2a", client: c2)
+        let p2b = try await addProject(db, "P2b", client: c2)
+        let loose = try await addProject(db, "Loose")
+        _ = try await db.fileAssets(assetIDs: ["a1", "a5"], projectID: p1, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a2"], projectID: p2a, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a2", "a3"], projectID: p2b, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a4"], projectID: loose, mode: .add, primary: false)
+
+        func grid(_ client: String, showHidden: Bool = false) async throws -> [String] {
+            try await db.searchAssets(clientID: client, showHidden: showHidden).map(\.id).sorted()
+        }
+        // Zero projects: an empty grid, never the unfiled u1.
+        #expect(try await grid(c0) == [])
+        // The pairs: one project, and two projects sharing an asset.
+        #expect(try await grid(c1) == ["a1"])
+        #expect(try await grid(c1, showHidden: true) == ["a1", "a5"])
+        #expect(try await grid(c2) == ["a2", "a3"])
+        let counts = try await db.fetchSidebarCounts()
+        #expect((counts.clients[c0] ?? 0) == 0)
+        #expect(counts.clients[c1] == 1)
+        #expect(counts.clients[c2] == 2)
+    }
+
     @Test func groupsAreByClientThenProjectIgnoringCaseWithTheClientlessGroupLast() {
         let tfwm = Client(id: "c-t", name: "TfWM", createdAt: "x")
         let ionic = Client(id: "c-i", name: "ionic", createdAt: "x")
