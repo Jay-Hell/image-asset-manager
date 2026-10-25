@@ -159,22 +159,139 @@ struct ImageAssetManagerTests {
         #expect(model.sourceSelection == .project(beta.id))
     }
 
-    /// R2-6. A drop adds (other projects kept) or, with the option key, moves, and the counts follow.
-    /// Worked by hand: a1 in One. Add to Two: One 1, Two 1. Move to Three: One 0, Two 0, Three 1.
-    @Test func droppingImagesOnAProjectAddsOrMovesAndRefreshesTheCounts() async throws {
+    /// R2-6. A drop adds (other projects kept) or, with the option key, also leaves the project being
+    /// viewed and only that one, and the counts follow. Worked by hand: a1 in One. Add to Two: One 1,
+    /// Two 1. Viewing One, option-drop on Three: One 0, Two 1 (kept), Three 1. Viewing All Assets,
+    /// option-drop on Four is a plain add: Two 1, Three 1, Four 1.
+    @Test func droppingImagesOnAProjectAddsAndOptionLeavesOnlyTheViewedProject() async throws {
         let (db, model, library) = try await manageRig()
         defer { try? FileManager.default.removeItem(at: library) }
         let one = try await db.createProject(name: "One", clientID: nil, description: nil).project
         let two = try await db.createProject(name: "Two", clientID: nil, description: nil).project
         let three = try await db.createProject(name: "Three", clientID: nil, description: nil).project
+        let four = try await db.createProject(name: "Four", clientID: nil, description: nil).project
         _ = try await db.fileAssets(assetIDs: ["a1"], projectID: one.id, mode: .add, primary: false)
         await model.loadSidebarData()
 
         try await model.dropImages(["a1"], onto: two.id, move: false)
         #expect(model.counts.projects[one.id] == 1 && model.counts.projects[two.id] == 1)
+        model.sourceSelection = .project(one.id)
         try await model.dropImages(["a1"], onto: three.id, move: true)
-        #expect((model.counts.projects[one.id] ?? 0) == 0 && (model.counts.projects[two.id] ?? 0) == 0)
+        #expect((model.counts.projects[one.id] ?? 0) == 0)
+        #expect(model.counts.projects[two.id] == 1, "its other project stays")
         #expect(model.counts.projects[three.id] == 1)
+        // The pair: the view is not a project, so the option key changes nothing.
+        model.sourceSelection = .allAssets
+        try await model.dropImages(["a1"], onto: four.id, move: true)
+        #expect(model.counts.projects[two.id] == 1 && model.counts.projects[three.id] == 1 && model.counts.projects[four.id] == 1)
+    }
+
+    private func addAsset(_ db: AppDatabase, _ id: String, filename: String) async throws {
+        try await db.insertAsset(Asset(
+            id: id, filename: filename, fileHash: "h\(id)", providerID: "nano_banana", modelID: "m",
+            createdAt: "2026-10-01T09:00:00Z"))
+    }
+
+    /// R2-6 P2-2. A reload drops selected images that are no longer in the grid, and the inspector
+    /// follows. Worked by hand: a1 "a1.png", a2 "b2.png", a3 "a3.png", all in One, all selected.
+    /// Search "b2" keeps a2 (the inspector shows it); search "zz" leaves nothing. Hiding a1 and a3
+    /// behind the model's back leaves a2. Moving a2 to Two while viewing One leaves a1 and a3.
+    @Test func aReloadDropsSelectedImagesThatLeftTheGridAndTheInspectorFollows() async throws {
+        let (db, model, library) = try await manageRig()
+        defer { try? FileManager.default.removeItem(at: library) }
+        try await addAsset(db, "a2", filename: "b2.png")
+        try await addAsset(db, "a3", filename: "a3.png")
+        let one = try await db.createProject(name: "One", clientID: nil, description: nil).project
+        let two = try await db.createProject(name: "Two", clientID: nil, description: nil).project
+        _ = try await db.fileAssets(assetIDs: ["a1", "a2", "a3"], projectID: one.id, mode: .add, primary: false)
+        await model.loadSidebarData()
+        model.sourceSelection = .project(one.id)
+
+        func selectEverything() async {
+            await model.loadAssets()
+            await model.selectAll(order: model.displayedOrder)
+            #expect(model.selectedAssetIDs == ["a1", "a2", "a3"] && model.inspectorDetail == nil)
+        }
+
+        // Search.
+        await selectEverything()
+        model.searchText = "b2"
+        await model.loadAssets()
+        #expect(model.selectedAssetIDs == ["a2"])
+        #expect(model.inspectorDetail?.asset.id == "a2" && model.selectedAssetID == "a2")
+        model.searchText = "zz"
+        await model.loadAssets()
+        #expect(model.selectedAssetIDs.isEmpty && model.inspectorDetail == nil && model.selectedAssetID == nil)
+        model.searchText = ""
+
+        // Hide.
+        await selectEverything()
+        try await db.setHidden(assetIDs: ["a1", "a3"], hidden: true)
+        await model.loadAssets()
+        #expect(model.selectedAssetIDs == ["a2"] && model.inspectorDetail?.asset.id == "a2")
+        try await db.setHidden(assetIDs: ["a1", "a3"], hidden: false)
+
+        // A move out of the viewed project.
+        await selectEverything()
+        _ = try await db.moveAssets(assetIDs: ["a2"], from: one.id, to: two.id)
+        await model.loadAssets()
+        #expect(model.selectedAssetIDs == ["a1", "a3"] && model.inspectorDetail == nil)
+    }
+
+    /// R2-6 P2-3. A write made through the database, not the view model (as an MCP tool call or another
+    /// window does), reaches the sidebar. Worked by hand: a1 filed into Alpha is 1 in Alpha's count;
+    /// a client and a project made the same way appear in the groups.
+    @Test func aWriteMadeThroughTheDatabaseRefreshesTheSidebarWithoutTheViewModel() async throws {
+        let (db, model, library) = try await manageRig()
+        defer { try? FileManager.default.removeItem(at: library) }
+        let alpha = try await db.createProject(name: "Alpha", clientID: nil, description: nil).project
+        await model.loadSidebarData()
+        #expect((model.counts.projects[alpha.id] ?? 0) == 0 && model.clients.isEmpty)
+        let watching = Task { await model.observeLibraryChanges() }
+        defer { watching.cancel() }
+        func settles(_ done: () -> Bool) async -> Bool {
+            for _ in 0..<100 {
+                if done() { return true }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            return false
+        }
+        try await Task.sleep(for: .milliseconds(300))   // the observation starts on its own task
+
+        _ = try await db.fileAssets(assetIDs: ["a1"], projectID: alpha.id, mode: .add, primary: false)
+        #expect(await settles { model.counts.projects[alpha.id] == 1 }, "a filing")
+        let client = try await db.createClient(name: "Zed").client
+        #expect(await settles { model.clients.map(\.name) == ["Zed"] }, "a client")
+        _ = try await db.createProject(name: "Beta", clientID: client.id, description: nil)
+        #expect(await settles { model.sidebarGroups.first?.projects.map(\.name) == ["Beta"] }, "a project")
+        try await db.deleteProject(id: alpha.id)
+        #expect(await settles { model.projects.map(\.name) == ["Beta"] && model.counts.unfiled == 1 }, "a delete")
+    }
+
+    /// R2-6 P3-1 and P3-3. The on-screen order is each filmstrip's members then the standalone grid, and
+    /// selecting through `selectAsset` (whatever calls it) puts the same image in the Mac selection.
+    /// Worked by hand: a1 and a2 are one family (a2 first in the filmstrip), a3 stands alone.
+    @Test func theDisplayedOrderIncludesFilmstripMembersAndSelectAssetKeepsTheSelectionInStep() async throws {
+        let (db, model, library) = try await manageRig()
+        defer { try? FileManager.default.removeItem(at: library) }
+        try await addAsset(db, "a2", filename: "b2.png")
+        try await addAsset(db, "a3", filename: "a3.png")
+        for id in ["a2", "a1"] {
+            _ = try await db.attachToVariantFamily(assetID: id, projectID: nil, familyName: "Heroes", prompt: nil, filename: "\(id).png")
+        }
+        await model.loadSidebarData()
+        await model.loadAssets()
+        #expect(model.displayedOrder == ["a2", "a1", "a3"])
+        await model.selectAll(order: model.displayedOrder)
+        #expect(model.selectedAssetIDs == ["a1", "a2", "a3"])
+
+        await model.selectAsset("a3")
+        #expect(model.selectedAssetIDs == ["a3"] && model.inspectorDetail?.asset.id == "a3")
+        // The pair: a click that already left exactly this image selected keeps its anchor.
+        await model.click("a1", .plain, order: model.displayedOrder)
+        await model.click("a3", .command, order: model.displayedOrder)
+        await model.click("a1", .command, order: model.displayedOrder)
+        #expect(model.selection.anchor == "a1" && model.selectedAssetIDs == ["a3"])
     }
 
     /// R2-6. The Mac click rules drive the selection and the inspector: one image shows in the inspector,

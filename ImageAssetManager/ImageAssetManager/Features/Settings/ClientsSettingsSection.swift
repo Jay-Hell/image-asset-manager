@@ -9,6 +9,7 @@ struct ClientsSettingsSection: View {
     @State private var editingName: String = ""
     @State private var newClientName: String = ""
     @State private var errorMessage: String?
+    @State private var pendingDelete: DeleteTarget?
 
     var body: some View {
         Section {
@@ -34,11 +35,20 @@ struct ClientsSettingsSection: View {
         } header: {
             Text("Clients")
         } footer: {
-            Text("Clients group projects. Rename any client inline; deletion is only allowed when no project references the client.")
+            Text("Clients group projects. Rename any client inline. Deleting a client keeps its projects and images; the projects move to \u{201C}No client\u{201D}.")
                 .font(.caption)
                 .foregroundStyle(Color.appTextSecondary)
         }
-        .task(id: env.libraryEditRevision) { await reload(edited: false) }
+        // Loads now and again after every change to the library, from here, the sidebar, another window or the MCP.
+        .task(id: ObjectIdentifier(env.database)) {
+            await reload()
+            for await _ in env.database.libraryChanges() { await reload() }
+        }
+        .sheet(item: $pendingDelete) { target in
+            DeleteConfirmSheet(target: target) {
+                if case .client(let id, _, _) = target { try await env.database.deleteClient(id: id) }
+            }
+        }
         .alert("Client Error", isPresented: .init(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -82,10 +92,8 @@ struct ClientsSettingsSection: View {
         }
     }
 
-    /// `edited`: this follows a change, so the main window's sidebar and grid reload too.
-    private func reload(edited: Bool = true) async {
+    private func reload() async {
         clients = (try? await env.database.fetchClients()) ?? []
-        if edited { env.libraryEdited() }
     }
 
     private func addClient() {
@@ -122,14 +130,11 @@ struct ClientsSettingsSection: View {
         }
     }
 
+    /// Asks first, in the window, in the sidebar's words (`DeleteConfirmSheet`); the delete is the sheet's Delete.
     private func deleteClient(_ client: Client) {
         Task {
-            do {
-                try await env.database.deleteClient(id: client.id)
-                await reload()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            let projects = (try? await env.database.projectCount(clientID: client.id)) ?? 0
+            pendingDelete = .client(id: client.id, name: client.name, projects: projects)
         }
     }
 }

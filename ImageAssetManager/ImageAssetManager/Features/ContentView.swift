@@ -79,9 +79,6 @@ struct ContentView: View {
                             libraryURL: env.libraryURL
                         )
                     }
-                    .onChange(of: env.libraryEditRevision) { _, _ in
-                        Task { await libraryVM.reloadAfterExternalEdit() }
-                    }
                     .onChange(of: showGenerationSheet) { _, isShowing in
                         guard !isShowing else { return }
                         Task {
@@ -109,10 +106,14 @@ struct ContentView: View {
             await newGenVM.loadInitialData()
 
             generationVM = newGenVM
-            libraryVM = LibraryViewModel(database: env.database, libraryURL: env.libraryURL)
+            let newLibraryVM = LibraryViewModel(database: env.database, libraryURL: env.libraryURL)
+            libraryVM = newLibraryVM
             promptVM = PromptViewModel(database: env.database, libraryURL: env.libraryURL)
             exportVM = ExportViewModel(database: env.database)
             spendVM = SpendViewModel(database: env.database)
+            // Every window's sidebar and grid follow every write to clients, projects, filings and
+            // families (this window, Settings, another window, an MCP call) until the library changes.
+            await newLibraryVM.observeLibraryChanges()
         }
     }
 

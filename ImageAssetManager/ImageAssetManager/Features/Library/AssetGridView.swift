@@ -36,10 +36,13 @@ struct AssetGridView: View {
                                 variant: variant,
                                 members: members,
                                 libraryURL: viewModel.libraryURL,
-                                selectedAssetID: viewModel.selectedAssetID,
+                                isSelected: { isMacSelected($0) },
                                 onSelect: { assetID in
                                     #if os(macOS)
-                                    Task { await viewModel.click(assetID, .plain, order: []) }
+                                    // ⌘ and ⇧ work on a filmstrip member as on a grid image; the range runs in screen order.
+                                    gridFocused = true
+                                    let order = viewModel.displayedOrder
+                                    Task { await viewModel.click(assetID, Self.clickKindFromModifiers(), order: order) }
                                     #else
                                     Task { await viewModel.selectAsset(assetID) }
                                     #endif
@@ -95,7 +98,7 @@ struct AssetGridView: View {
             }
             .onKeyPress(keys: [KeyEquivalent("a")]) { press in
                 guard press.modifiers.contains(.command) else { return .ignored }
-                let order = standaloneAssets.map(\.id)
+                let order = viewModel.displayedOrder
                 Task { await viewModel.selectAll(order: order) }
                 return .handled
             }
@@ -233,6 +236,14 @@ struct AssetGridView: View {
 
     // MARK: - Selectable cell
 
+    #if os(macOS)
+    /// The click kind the modifier keys held right now give.
+    private static func clickKindFromModifiers() -> GridSelection.Click {
+        let flags = NSEvent.modifierFlags
+        return flags.contains(.command) ? .command : flags.contains(.shift) ? .shift : .plain
+    }
+    #endif
+
     /// macOS: the image is in the Mac selection. Elsewhere: it is the one the inspector shows.
     private func isMacSelected(_ id: String) -> Bool {
         #if os(macOS)
@@ -281,9 +292,8 @@ struct AssetGridView: View {
                 } else {
                     #if os(macOS)
                     gridFocused = true
-                    let flags = NSEvent.modifierFlags
-                    let kind: GridSelection.Click = flags.contains(.command) ? .command : flags.contains(.shift) ? .shift : .plain
-                    let order = standaloneAssets.map(\.id)
+                    let kind = Self.clickKindFromModifiers()
+                    let order = viewModel.displayedOrder
                     Task { await viewModel.click(asset.id, kind, order: order) }
                     #else
                     Task { await viewModel.selectAsset(asset.id) }

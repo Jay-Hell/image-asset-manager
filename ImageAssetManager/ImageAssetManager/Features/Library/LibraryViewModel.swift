@@ -170,6 +170,33 @@ final class LibraryViewModel {
         } catch {
             assets = []
         }
+        await pruneSelectionToDisplayed()
+    }
+
+    /// The image IDs on screen, in the order shown: each filmstrip's members first, then the
+    /// standalone grid (a family member lives in its filmstrip, not the grid). ⌘A and ⇧-range use this.
+    var displayedOrder: [String] {
+        var seen: Set<String> = []
+        let members = displayedVariantFamilies.flatMap { $0.1.map { $0.1.id } }
+        let standalone = assets.filter { !variantMemberIDs.contains($0.id) }.map(\.id)
+        return (members + standalone).filter { seen.insert($0).inserted }
+    }
+
+    /// A search, a hide, a move out of the viewed project or a delete can take images off the
+    /// screen. They leave the selection, and the inspector follows: an image that is gone is not
+    /// shown, and the Mac inspector shows the one image still selected (or none).
+    private func pruneSelectionToDisplayed() async {
+        let shown = Set(displayedOrder)
+        if let sid = selectedAssetID, !shown.contains(sid) {
+            selectedAssetID = nil
+            inspectorDetail = nil
+        }
+        let kept = selection.selected.intersection(shown)
+        guard kept != selection.selected else { return }
+        selection = GridSelection(selected: kept, anchor: selection.anchor.flatMap { shown.contains($0) ? $0 : nil })
+        #if os(macOS)
+        if !isSelectMode { await syncInspectorToSelection() }
+        #endif
     }
 
     /// Drops cached thumbnails no asset needs, at most once a day (`ThumbnailCache.sweepIfDue`),
@@ -184,6 +211,13 @@ final class LibraryViewModel {
 
     func selectAsset(_ assetID: String) async {
         selectedAssetID = assetID
+        #if os(macOS)
+        // Whatever calls this, the grid highlight is the image the inspector shows (not in Select mode,
+        // where the ticked set is the user's own).
+        if !isSelectMode && selection.selected != [assetID] {
+            selection = GridSelection(selected: [assetID], anchor: assetID)
+        }
+        #endif
 
         let asset: Asset?
         if let found = assets.first(where: { $0.id == assetID }) {
@@ -575,14 +609,25 @@ final class LibraryViewModel {
         (try? await database.assetCount(projectID: projectID)) ?? 0
     }
 
-    /// Images dropped on a project: added (their other projects kept), or with ⌥ moved (R2-1 `move`).
+    /// Images dropped on a project: added (their other projects kept). With ⌥ they also leave the
+    /// project being viewed, and only that one (`moveAssets`); when the view is not a project, ⌥ is
+    /// the same as a plain drop.
     func dropImages(_ ids: Set<String>, onto projectID: String, move: Bool) async throws {
-        try await file(ids, to: projectID, mode: move ? .move : .add)
+        var viewed: String?
+        if move, case .project(let current) = sourceSelection { viewed = current }
+        _ = try await database.moveAssets(assetIDs: Array(ids), from: viewed, to: projectID)
+        await refreshAfterWrite(touching: ids)
     }
 
-    /// Reload everything after an edit made outside this view model (Settings).
-    func reloadAfterExternalEdit() async {
-        await refreshAfterWrite(touching: [])
+    /// Reloads the sidebar and grid on every committed change to clients, projects, filings or
+    /// variant families, whoever made it: this window, Settings, another window, or an MCP tool call.
+    /// Runs until cancelled (the window's `.task`).
+    func observeLibraryChanges() async {
+        for await _ in database.libraryChanges() {
+            await loadSidebarData()
+            await loadAssets()
+            if let sid = selectedAssetID { await selectAsset(sid) }
+        }
     }
 
     // MARK: - Mac selection

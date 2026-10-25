@@ -49,7 +49,7 @@ struct SourcePanelView: View {
                             .tag(SourceSelection.client(client.id))
                             .contextMenu { clientMenu(client) }
                             .modifier(DropHighlight(active: dropTargeted == "client:\(client.id)"))
-                            .onDrop(of: [.json], delegate: clientDropDelegate(client.id))
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(client.id))
                     }
                     ForEach(group.projects, id: \.id) { project in
                         row(project.name, symbol: "briefcase", count: viewModel.counts.projects[project.id] ?? 0)
@@ -57,18 +57,18 @@ struct SourcePanelView: View {
                             .contextMenu { projectMenu(project) }
                             .modifier(DropHighlight(active: dropTargeted == "project:\(project.id)"))
                             .draggable(SidebarDrag.project(project.id))
-                            .onDrop(of: [.json], delegate: projectDropDelegate(project.id))
+                            .onDrop(of: [SidebarDrag.Kind.images.contentType], delegate: projectDropDelegate(project.id))
                     }
                 } header: {
                     if let client = group.client {
                         Text(client.name)
                             .modifier(DropHighlight(active: dropTargeted == "client:\(client.id)"))
                             .contextMenu { clientMenu(client) }
-                            .onDrop(of: [.json], delegate: clientDropDelegate(client.id))
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(client.id))
                     } else {
                         Text("No client")
                             .modifier(DropHighlight(active: dropTargeted == "none"))
-                            .onDrop(of: [.json], delegate: clientDropDelegate(nil))
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(nil))
                     }
                 }
             }
@@ -136,9 +136,13 @@ struct SourcePanelView: View {
             case .renameClient(let id, let name): RenameSheet(viewModel: viewModel, kind: .client, id: id, name: name)
             case .renameProject(let id, let name): RenameSheet(viewModel: viewModel, kind: .project, id: id, name: name)
             case .deleteClient(let id, let name, let projects):
-                DeleteSheet(viewModel: viewModel, target: .client(id: id, name: name, projects: projects))
+                DeleteConfirmSheet(target: .client(id: id, name: name, projects: projects)) {
+                    try await viewModel.deleteClient(id: id)
+                }
             case .deleteProject(let id, let name, let images):
-                DeleteSheet(viewModel: viewModel, target: .project(id: id, name: name, images: images))
+                DeleteConfirmSheet(target: .project(id: id, name: name, images: images)) {
+                    try await viewModel.deleteProject(id: id)
+                }
             }
         }
         .alert("Filing Failed", isPresented: .init(
@@ -190,9 +194,10 @@ struct SourcePanelView: View {
 
     // MARK: - Drops
 
-    /// Images dropped on a project add (⌥: move); a project dropped on a project does nothing.
+    /// Images dropped on a project add (⌥: also leave the project being viewed). It takes images only,
+    /// so a project dragged over it shows nothing.
     private func projectDropDelegate(_ projectID: String) -> SidebarDropDelegate {
-        SidebarDropDelegate(key: "project:\(projectID)", targeted: $dropTargeted, alwaysMove: false) { [viewModel] drag, option in
+        SidebarDropDelegate(key: "project:\(projectID)", accepts: .images, targeted: $dropTargeted, alwaysMove: false) { [viewModel] drag, option in
             guard case .images(let ids) = drag else { return }
             Task {
                 do { try await viewModel.dropImages(Set(ids), onto: projectID, move: option) } catch { dropError = error.localizedDescription }
@@ -200,9 +205,10 @@ struct SourcePanelView: View {
         }
     }
 
-    /// A project dropped on a client moves there, on "No client" (nil) detaches; images do nothing.
+    /// A project dropped on a client moves there, on "No client" (nil) detaches. It takes projects
+    /// only, so images dragged over it show nothing.
     private func clientDropDelegate(_ clientID: String?) -> SidebarDropDelegate {
-        SidebarDropDelegate(key: clientID.map { "client:\($0)" } ?? "none", targeted: $dropTargeted, alwaysMove: true) { [viewModel] drag, _ in
+        SidebarDropDelegate(key: clientID.map { "client:\($0)" } ?? "none", accepts: .project, targeted: $dropTargeted, alwaysMove: true) { [viewModel] drag, _ in
             guard case .project(let projectID) = drag else { return }
             Task {
                 do { try await viewModel.moveProject(id: projectID, toClient: clientID) } catch { dropError = error.localizedDescription }
@@ -339,81 +345,6 @@ private struct RenameSheet: View {
                 switch kind {
                 case .client: try await viewModel.renameClient(id: id, to: trimmed)
                 case .project: try await viewModel.renameProject(id: id, to: trimmed)
-                }
-                dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-}
-
-/// The delete confirmation, in the window rather than a system dialog, saying what goes and what stays.
-private struct DeleteSheet: View {
-    enum Target {
-        case client(id: String, name: String, projects: Int)
-        case project(id: String, name: String, images: Int)
-    }
-
-    @Bindable var viewModel: LibraryViewModel
-    let target: Target
-    @Environment(\.dismiss) private var dismiss
-    @State private var errorMessage: String?
-
-    private func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
-
-    private var title: String {
-        switch target {
-        case .client(_, let name, _): return "Delete client \u{201C}\(name)\u{201D}?"
-        case .project(_, let name, _): return "Delete project \u{201C}\(name)\u{201D}?"
-        }
-    }
-
-    private var detail: String {
-        switch target {
-        case .client(_, _, let projects):
-            return projects == 0
-                ? "It has no projects."
-                : "Its \(plural(projects, "project")) will move to \u{201C}No client\u{201D}. No project or image is deleted."
-        case .project(_, _, let images):
-            return images == 0
-                ? "It holds no images."
-                : "It holds \(plural(images, "image")). The images stay in the library; any left with no project show under Unfiled."
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            Text(detail)
-                .font(.callout)
-                .foregroundStyle(Color.appTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(.bordered)
-                Button("Delete", role: .destructive) { confirm() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 340, maxWidth: 420)
-    }
-
-    private func confirm() {
-        Task {
-            do {
-                switch target {
-                case .client(let id, _, _): try await viewModel.deleteClient(id: id)
-                case .project(let id, _, _): try await viewModel.deleteProject(id: id)
                 }
                 dismiss()
             } catch {

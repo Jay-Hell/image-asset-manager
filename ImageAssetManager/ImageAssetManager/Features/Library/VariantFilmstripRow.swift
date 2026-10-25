@@ -5,7 +5,8 @@ struct VariantFilmstripRow: View {
     let variant: Variant
     let members: [(VariantMember, Asset)]
     let libraryURL: URL
-    let selectedAssetID: String?
+    /// Whether a member is highlighted: in the Mac selection, or the one the inspector shows elsewhere.
+    let isSelected: (String) -> Bool
     var onSelect: (String) -> Void
     var onPromote: (String) -> Void
 
@@ -36,7 +37,7 @@ struct VariantFilmstripRow: View {
 
     private func tile(member: VariantMember, asset: Asset) -> some View {
         let fileURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
-        let isSelected = selectedAssetID == asset.id
+        let highlighted = isSelected(asset.id)
 
         return ZStack(alignment: .bottomLeading) {
             ThumbnailImage(asset: asset, fileURL: fileURL)
@@ -58,7 +59,7 @@ struct VariantFilmstripRow: View {
                 .accessibilityHidden(true)
         }
         .overlay {
-            if isSelected {
+            if highlighted {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(Color.appAccent, lineWidth: 2)
             }
