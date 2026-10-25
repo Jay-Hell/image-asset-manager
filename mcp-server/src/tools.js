@@ -445,18 +445,32 @@ export function prepareImportArgs(args) {
     throw new Error(`'${path.basename(real)}' is not an image import_asset accepts: only ${Object.keys(IMPORT_TYPES).join(', ')}.`);
   }
 
-  // Opened without following a link, so the file read is the one checked above; the cap is
-  // applied to what is actually read, not only to what stat said.
+  // Only a regular file, checked with lstat before it is opened: opening a FIFO or a device
+  // blocks, and this runs on the proxy's only thread.
+  let linkStat;
+  try {
+    linkStat = fs.lstatSync(real);
+  } catch (error) {
+    throw new Error(`Cannot read '${given}': ${error.code ?? error.message}`);
+  }
+  if (!linkStat.isFile()) throw new Error(`'${given}' is not a regular file.`);
+
+  // Opened without following a link, and non-blocking in case a FIFO was swapped in since the
+  // lstat, so the file read is the one checked above; the cap is applied to what is actually read,
+  // not only to what stat said.
   let fd;
   try {
-    fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   } catch (error) {
     throw new Error(`Cannot read '${given}': ${error.code ?? error.message}`);
   }
   let data, stat;
   try {
     stat = fs.fstatSync(fd);
-    if (!stat.isFile()) throw new Error(`'${given}' is not a regular file.`);
+    // The descriptor must be a regular file, and the same one lstat saw, before anything is read.
+    if (!stat.isFile() || stat.dev !== linkStat.dev || stat.ino !== linkStat.ino) {
+      throw new Error(`'${given}' is not a regular file.`);
+    }
     if (stat.size > IMPORT_MAX_BYTES) {
       throw new Error(`'${path.basename(real)}' is ${stat.size} bytes, over the ${IMPORT_MAX_BYTES}-byte (25 MB) import limit.`);
     }

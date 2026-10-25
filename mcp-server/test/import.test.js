@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { prepareImportArgs, IMPORT_MAX_BYTES } from '../src/tools.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -100,4 +102,30 @@ test('a relative, missing or empty path is refused with the reason', () => {
   assert.throws(() => prepareImportArgs({}), /needs `path`/);
   assert.throws(() => prepareImportArgs({ path: path.join(dir, 'missing.png') }), /Cannot read .*ENOENT/);
   assert.throws(() => prepareImportArgs({ path: write(dir, 'empty.png', Buffer.alloc(0)) }), /is empty/);
+});
+
+/** prepareImportArgs on `file` in a child process, killed after 3 s, so a guard that blocks cannot hang the runner. */
+function importInChild(file) {
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./import-child.js', import.meta.url)), file],
+    { timeout: 3000, encoding: 'utf8' });
+  return { timedOut: child.error?.code === 'ETIMEDOUT' || child.signal !== null, out: child.stdout };
+}
+
+test('a FIFO named x.png is refused at once, and never opened; a regular file through the same path is read', () => {
+  const dir = folder();
+  const fifo = path.join(dir, 'x.png');
+  execFileSync('mkfifo', [fifo]);
+  const started = Date.now();
+  const refused = importInChild(fifo);
+  assert.equal(refused.timedOut, false, 'the guard blocked on the FIFO');
+  assert.ok(Date.now() - started < 3000);
+  assert.match(JSON.parse(refused.out).error, /'.*x\.png' is not a regular file/);
+  // A directory with an image's name is refused the same way.
+  fs.mkdirSync(path.join(dir, 'folder.png'));
+  assert.throws(() => prepareImportArgs({ path: path.join(dir, 'folder.png') }), /is not a regular file/);
+
+  // The pair: a regular PNG beside it goes through the same child.
+  const sent = importInChild(write(dir, 'real.png', PNG));
+  assert.equal(sent.timedOut, false);
+  assert.deepEqual(JSON.parse(sent.out), { ok: true, media_type: 'image/png' });
 });
