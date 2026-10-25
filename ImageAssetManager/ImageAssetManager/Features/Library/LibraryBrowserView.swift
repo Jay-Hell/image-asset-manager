@@ -46,7 +46,9 @@ struct LibraryBrowserView: View {
                 } else {
                     Color.appBackground.ignoresSafeArea()
                         .overlay {
-                            Text("Select an asset to inspect")
+                            Text(viewModel.selectedAssetIDs.count > 1
+                                 ? "\(viewModel.selectedAssetIDs.count) images selected"
+                                 : "Select an asset to inspect")
                                 .foregroundStyle(Color.appTextSecondary)
                                 .font(.callout)
                         }

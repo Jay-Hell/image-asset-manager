@@ -6,7 +6,6 @@ final class AppEnvironment {
     var database: AppDatabase
     var libraryURL: URL
     private(set) var libraryRevision: Int = 0
-
     private static let bookmarkKey = "libraryLocationBookmark"
 
     init(database: AppDatabase, libraryURL: URL) {

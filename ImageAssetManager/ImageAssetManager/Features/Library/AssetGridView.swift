@@ -1,5 +1,8 @@
 import SwiftUI
 import ImageAssetManagerCore
+#if os(macOS)
+import AppKit
+#endif
 
 struct AssetGridView: View {
     @Bindable var viewModel: LibraryViewModel
@@ -12,6 +15,9 @@ struct AssetGridView: View {
     @State private var newTagName: String = ""
     /// A filing that failed, shown in an alert rather than looking like nothing happened.
     @State private var filingError: String?
+    #if os(macOS)
+    @FocusState private var gridFocused: Bool
+    #endif
 
     private let minTileWidth: CGFloat = 160
     private let spacing: CGFloat = 4
@@ -30,9 +36,16 @@ struct AssetGridView: View {
                                 variant: variant,
                                 members: members,
                                 libraryURL: viewModel.libraryURL,
-                                selectedAssetID: viewModel.selectedAssetID,
+                                isSelected: { isMacSelected($0) },
                                 onSelect: { assetID in
+                                    #if os(macOS)
+                                    // ⌘ and ⇧ work on a filmstrip member as on a grid image; the range runs in screen order.
+                                    gridFocused = true
+                                    let order = viewModel.displayedOrder
+                                    Task { await viewModel.click(assetID, Self.clickKindFromModifiers(), order: order) }
+                                    #else
                                     Task { await viewModel.selectAsset(assetID) }
+                                    #endif
                                 },
                                 onPromote: { memberID in
                                     Task { await viewModel.promoteVariantMember(memberID: memberID, in: variant.id) }
@@ -73,6 +86,23 @@ struct AssetGridView: View {
                 }
             }
             .background(Color.appBackground)
+            #if os(macOS)
+            // ⌘A selects every image in the view and Esc clears, while the grid has focus (a click on an image gives it).
+            .focusable()
+            .focusEffectDisabled()
+            .focused($gridFocused)
+            .onKeyPress(.escape) {
+                guard !viewModel.selection.selected.isEmpty else { return .ignored }
+                Task { await viewModel.clearSelection() }
+                return .handled
+            }
+            .onKeyPress(keys: [KeyEquivalent("a")]) { press in
+                guard press.modifiers.contains(.command) else { return .ignored }
+                let order = viewModel.displayedOrder
+                Task { await viewModel.selectAll(order: order) }
+                return .handled
+            }
+            #endif
             .searchable(text: $viewModel.searchText, prompt: "Search assets")
             .onSubmit(of: .search) {
                 Task { await viewModel.loadAssets() }
@@ -206,13 +236,30 @@ struct AssetGridView: View {
 
     // MARK: - Selectable cell
 
+    #if os(macOS)
+    /// The click kind the modifier keys held right now give.
+    private static func clickKindFromModifiers() -> GridSelection.Click {
+        let flags = NSEvent.modifierFlags
+        return flags.contains(.command) ? .command : flags.contains(.shift) ? .shift : .plain
+    }
+    #endif
+
+    /// macOS: the image is in the Mac selection. Elsewhere: it is the one the inspector shows.
+    private func isMacSelected(_ id: String) -> Bool {
+        #if os(macOS)
+        viewModel.selection.selected.contains(id)
+        #else
+        viewModel.selectedAssetID == id
+        #endif
+    }
+
     @ViewBuilder
     private func selectableCell(asset: Asset) -> some View {
         ZStack(alignment: .topTrailing) {
             AssetThumbnailView(
                 asset: asset,
                 libraryURL: viewModel.libraryURL,
-                isSelected: !viewModel.isSelectMode && viewModel.selectedAssetID == asset.id
+                isSelected: !viewModel.isSelectMode && isMacSelected(asset.id)
             )
             .opacity(asset.isHidden ? 0.4 : 1.0)
             .overlay(alignment: .topLeading) {
@@ -229,12 +276,12 @@ struct AssetGridView: View {
             }
             .contextMenu {
                 if !viewModel.projects.isEmpty {
-                    // In select mode, a ticked asset's menu acts on the whole selection.
-                    let ids: Set<String> = viewModel.isSelectMode && viewModel.selectedAssetIDs.contains(asset.id)
-                        ? viewModel.selectedAssetIDs : [asset.id]
-                    filingMenus(for: ids)
+                    // A selected asset's menu acts on the whole selection (ticked, or Mac-selected).
+                    filingMenus(for: viewModel.selection.actedOn(asset.id))
                 }
             }
+            // Dragging a selected image drags the whole selection; an unselected one drags alone.
+            .draggable(SidebarDrag.images(viewModel.selection.actedOn(asset.id).sorted()))
             .onTapGesture {
                 if viewModel.isSelectMode {
                     if viewModel.selectedAssetIDs.contains(asset.id) {
@@ -243,7 +290,14 @@ struct AssetGridView: View {
                         viewModel.selectedAssetIDs.insert(asset.id)
                     }
                 } else {
+                    #if os(macOS)
+                    gridFocused = true
+                    let kind = Self.clickKindFromModifiers()
+                    let order = viewModel.displayedOrder
+                    Task { await viewModel.click(asset.id, kind, order: order) }
+                    #else
                     Task { await viewModel.selectAsset(asset.id) }
+                    #endif
                 }
             }
 

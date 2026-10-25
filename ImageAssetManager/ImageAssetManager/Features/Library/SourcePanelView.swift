@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ImageAssetManagerCore
 
 struct SourcePanelView: View {
@@ -6,9 +7,27 @@ struct SourcePanelView: View {
 
     private enum Sheet: Identifiable {
         case newClient, newProject, tags
-        var id: Int { hashValue }
+        case renameClient(id: String, name: String)
+        case renameProject(id: String, name: String)
+        case deleteClient(id: String, name: String, projects: Int)
+        case deleteProject(id: String, name: String, images: Int)
+        var id: String {
+            switch self {
+            case .newClient: return "newClient"
+            case .newProject: return "newProject"
+            case .tags: return "tags"
+            case .renameClient(let id, _): return "renameClient-\(id)"
+            case .renameProject(let id, _): return "renameProject-\(id)"
+            case .deleteClient(let id, _, _): return "deleteClient-\(id)"
+            case .deleteProject(let id, _, _): return "deleteProject-\(id)"
+            }
+        }
     }
     @State private var sheet: Sheet?
+    /// The row a drag is over, by `"client:<id>"`, `"project:<id>"` or `"none"`.
+    @State private var dropTargeted: String?
+    /// A drop that failed, shown rather than looking like nothing happened.
+    @State private var dropError: String?
 
     var body: some View {
         // iOS only offers `List(selection:)` for an optional (or Set) binding.
@@ -24,14 +43,32 @@ struct SourcePanelView: View {
             }
 
             ForEach(viewModel.sidebarGroups, id: \.client?.id) { group in
-                Section(group.client?.name ?? "No client") {
+                Section {
                     if let client = group.client {
                         row("All \(client.name)", symbol: "person.crop.circle", count: viewModel.counts.clients[client.id] ?? 0)
                             .tag(SourceSelection.client(client.id))
+                            .contextMenu { clientMenu(client) }
+                            .modifier(DropHighlight(active: dropTargeted == "client:\(client.id)"))
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(client.id))
                     }
                     ForEach(group.projects, id: \.id) { project in
                         row(project.name, symbol: "briefcase", count: viewModel.counts.projects[project.id] ?? 0)
                             .tag(SourceSelection.project(project.id))
+                            .contextMenu { projectMenu(project) }
+                            .modifier(DropHighlight(active: dropTargeted == "project:\(project.id)"))
+                            .draggable(SidebarDrag.project(project.id))
+                            .onDrop(of: [SidebarDrag.Kind.images.contentType], delegate: projectDropDelegate(project.id))
+                    }
+                } header: {
+                    if let client = group.client {
+                        Text(client.name)
+                            .modifier(DropHighlight(active: dropTargeted == "client:\(client.id)"))
+                            .contextMenu { clientMenu(client) }
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(client.id))
+                    } else {
+                        Text("No client")
+                            .modifier(DropHighlight(active: dropTargeted == "none"))
+                            .onDrop(of: [SidebarDrag.Kind.project.contentType], delegate: clientDropDelegate(nil))
                     }
                 }
             }
@@ -96,6 +133,85 @@ struct SourcePanelView: View {
             case .newClient: NewNameSheet(viewModel: viewModel, kind: .client)
             case .newProject: NewNameSheet(viewModel: viewModel, kind: .project)
             case .tags: TagManagerView(viewModel: viewModel)
+            case .renameClient(let id, let name): RenameSheet(viewModel: viewModel, kind: .client, id: id, name: name)
+            case .renameProject(let id, let name): RenameSheet(viewModel: viewModel, kind: .project, id: id, name: name)
+            case .deleteClient(let id, let name, let projects):
+                DeleteConfirmSheet(target: .client(id: id, name: name, projects: projects)) {
+                    try await viewModel.deleteClient(id: id)
+                }
+            case .deleteProject(let id, let name, let images):
+                DeleteConfirmSheet(target: .project(id: id, name: name, images: images)) {
+                    try await viewModel.deleteProject(id: id)
+                }
+            }
+        }
+        .alert("Filing Failed", isPresented: .init(
+            get: { dropError != nil },
+            set: { if !$0 { dropError = nil } }
+        )) {
+            Button("OK") { dropError = nil }
+        } message: {
+            Text(dropError ?? "")
+        }
+    }
+
+    // MARK: - Context menus
+
+    @ViewBuilder
+    private func clientMenu(_ client: Client) -> some View {
+        Button("Rename…") { sheet = .renameClient(id: client.id, name: client.name) }
+        Button("Delete…", role: .destructive) {
+            let projects = viewModel.projects.filter { $0.clientID == client.id }.count
+            sheet = .deleteClient(id: client.id, name: client.name, projects: projects)
+        }
+    }
+
+    @ViewBuilder
+    private func projectMenu(_ project: Project) -> some View {
+        Button("Rename…") { sheet = .renameProject(id: project.id, name: project.name) }
+        Menu("Move to client") {
+            ForEach(viewModel.clients, id: \.id) { client in
+                Button(client.name) { moveProject(project.id, to: client.id) }
+                    .disabled(project.clientID == client.id)
+            }
+            Divider()
+            Button("No client") { moveProject(project.id, to: nil) }
+                .disabled(project.clientID == nil)
+        }
+        Button("Delete…", role: .destructive) {
+            Task {
+                let images = await viewModel.imageCount(projectID: project.id)
+                sheet = .deleteProject(id: project.id, name: project.name, images: images)
+            }
+        }
+    }
+
+    private func moveProject(_ id: String, to clientID: String?) {
+        Task {
+            do { try await viewModel.moveProject(id: id, toClient: clientID) } catch { dropError = error.localizedDescription }
+        }
+    }
+
+    // MARK: - Drops
+
+    /// Images dropped on a project add (⌥: also leave the project being viewed). It takes images only,
+    /// so a project dragged over it shows nothing.
+    private func projectDropDelegate(_ projectID: String) -> SidebarDropDelegate {
+        SidebarDropDelegate(key: "project:\(projectID)", accepts: .images, targeted: $dropTargeted, alwaysMove: false) { [viewModel] drag, option in
+            guard case .images(let ids) = drag else { return }
+            Task {
+                do { try await viewModel.dropImages(Set(ids), onto: projectID, move: option) } catch { dropError = error.localizedDescription }
+            }
+        }
+    }
+
+    /// A project dropped on a client moves there, on "No client" (nil) detaches. It takes projects
+    /// only, so images dragged over it show nothing.
+    private func clientDropDelegate(_ clientID: String?) -> SidebarDropDelegate {
+        SidebarDropDelegate(key: clientID.map { "client:\($0)" } ?? "none", accepts: .project, targeted: $dropTargeted, alwaysMove: true) { [viewModel] drag, _ in
+            guard case .project(let projectID) = drag else { return }
+            Task {
+                do { try await viewModel.moveProject(id: projectID, toClient: clientID) } catch { dropError = error.localizedDescription }
             }
         }
     }
@@ -174,5 +290,78 @@ private struct NewNameSheet: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// Rename a client or project. A name another has in any case is refused here, with the text creating gives.
+private struct RenameSheet: View {
+    enum Kind { case client, project }
+
+    @Bindable var viewModel: LibraryViewModel
+    let kind: Kind
+    let id: String
+    @State var name: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var errorMessage: String?
+
+    init(viewModel: LibraryViewModel, kind: Kind, id: String, name: String) {
+        self.viewModel = viewModel
+        self.kind = kind
+        self.id = id
+        _name = State(initialValue: name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(kind == .client ? "Rename Client" : "Rename Project").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { rename() }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+                Button("Rename") { rename() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.appAccent)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 340)
+    }
+
+    private func rename() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                switch kind {
+                case .client: try await viewModel.renameClient(id: id, to: trimmed)
+                case .project: try await viewModel.renameProject(id: id, to: trimmed)
+                }
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// An accent outline and wash on the row a drag is over.
+private struct DropHighlight: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        content
+            .background(active ? Color.appAccent.opacity(0.25) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                if active { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.appAccent, lineWidth: 2) }
+            }
     }
 }

@@ -9,6 +9,7 @@ struct ClientsSettingsSection: View {
     @State private var editingName: String = ""
     @State private var newClientName: String = ""
     @State private var errorMessage: String?
+    @State private var pendingDelete: DeleteTarget?
 
     var body: some View {
         Section {
@@ -34,11 +35,20 @@ struct ClientsSettingsSection: View {
         } header: {
             Text("Clients")
         } footer: {
-            Text("Clients group projects. Rename any client inline; deletion is only allowed when no project references the client.")
+            Text("Clients group projects. Rename any client inline. Deleting a client keeps its projects and images; the projects move to \u{201C}No client\u{201D}.")
                 .font(.caption)
                 .foregroundStyle(Color.appTextSecondary)
         }
-        .task { await reload() }
+        // Loads now and again after every change to the library, from here, the sidebar, another window or the MCP.
+        .task(id: ObjectIdentifier(env.database)) {
+            await reload()
+            for await _ in env.database.libraryChanges() { await reload() }
+        }
+        .sheet(item: $pendingDelete) { target in
+            DeleteConfirmSheet(target: target) {
+                if case .client(let id, _, _) = target { try await env.database.deleteClient(id: id) }
+            }
+        }
         .alert("Client Error", isPresented: .init(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -110,27 +120,21 @@ struct ClientsSettingsSection: View {
         guard !trimmed.isEmpty else { editingID = nil; return }
         Task {
             do {
-                try await env.database.renameClient(id: client.id, newName: trimmed)
+                // The same clash rule and text as creating one (and as the sidebar's rename).
+                try await env.database.renameClientReportingClash(id: client.id, newName: trimmed)
                 editingID = nil
                 await reload()
-            } catch ClientError.nameInUse {
-                errorMessage = "Another client already has that name."
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
+    /// Asks first, in the window, in the sidebar's words (`DeleteConfirmSheet`); the delete is the sheet's Delete.
     private func deleteClient(_ client: Client) {
         Task {
-            do {
-                try await env.database.deleteClient(id: client.id)
-                await reload()
-            } catch ClientError.hasAssignedProjects {
-                errorMessage = "Cannot delete \"\(client.name)\" — it still has projects assigned. Reassign or delete those projects first."
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            let projects = (try? await env.database.projectCount(clientID: client.id)) ?? 0
+            pendingDelete = .client(id: client.id, name: client.name, projects: projects)
         }
     }
 }

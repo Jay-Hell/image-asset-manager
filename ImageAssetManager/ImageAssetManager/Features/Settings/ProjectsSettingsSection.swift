@@ -11,6 +11,7 @@ struct ProjectsSettingsSection: View {
     @State private var newProjectName: String = ""
     @State private var newProjectClientID: String?
     @State private var errorMessage: String?
+    @State private var pendingDelete: DeleteTarget?
 
     var body: some View {
         Section {
@@ -39,11 +40,20 @@ struct ProjectsSettingsSection: View {
         } header: {
             Text("Projects")
         } footer: {
-            Text("Projects are scoped to a client. Deleting a project removes its collections and references; existing assets become project-less.")
+            Text("Projects are scoped to a client. Deleting a project keeps its images; any left with no project show under Unfiled.")
                 .font(.caption)
                 .foregroundStyle(Color.appTextSecondary)
         }
-        .task { await reload() }
+        // Loads now and again after every change to the library, from here, the sidebar, another window or the MCP.
+        .task(id: ObjectIdentifier(env.database)) {
+            await reload()
+            for await _ in env.database.libraryChanges() { await reload() }
+        }
+        .sheet(item: $pendingDelete) { target in
+            DeleteConfirmSheet(target: target) {
+                if case .project(let id, _, _) = target { try await env.database.deleteProject(id: id) }
+            }
+        }
         .alert("Project Error", isPresented: .init(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -146,7 +156,7 @@ struct ProjectsSettingsSection: View {
         guard !trimmed.isEmpty else { editingID = nil; return }
         Task {
             do {
-                try await env.database.renameProject(id: project.id, newName: trimmed)
+                try await env.database.renameProjectReportingClash(id: project.id, newName: trimmed)
                 editingID = nil
                 await reload()
             } catch {
@@ -166,14 +176,11 @@ struct ProjectsSettingsSection: View {
         }
     }
 
+    /// Asks first, in the window, in the sidebar's words (`DeleteConfirmSheet`); the delete is the sheet's Delete.
     private func deleteProject(_ project: Project) {
         Task {
-            do {
-                try await env.database.deleteProject(id: project.id)
-                await reload()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            let images = (try? await env.database.assetCount(projectID: project.id)) ?? 0
+            pendingDelete = .project(id: project.id, name: project.name, images: images)
         }
     }
 }

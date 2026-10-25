@@ -74,3 +74,33 @@ public enum NameClash {
     public static func client(_ existing: String) -> String { "A client named \u{201C}\(existing)\u{201D} already exists." }
     public static func project(_ existing: String) -> String { "A project named \u{201C}\(existing)\u{201D} already exists." }
 }
+
+/// A refused name, carrying the text creating a client or project shows for the same clash.
+public struct NameClashError: LocalizedError, Equatable {
+    public let message: String
+    public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
+}
+
+extension AppDatabase {
+    /// `renameClient`, with a clash reported as `NameClashError` naming the client that has the name
+    /// (the text `createClient` gives), the same rule including Unicode case folding.
+    public func renameClientReportingClash(id: String, newName: String) async throws {
+        do {
+            try await renameClient(id: id, newName: newName)
+        } catch ClientError.nameInUse {
+            let existing = try await fetchClients().first { $0.id != id && NameMatch.same($0.name, newName) }
+            throw NameClashError(message: NameClash.client(existing?.name ?? newName.trimmingCharacters(in: .whitespaces)))
+        }
+    }
+
+    /// `renameProject`, with a clash reported the way `createProject` reports it.
+    public func renameProjectReportingClash(id: String, newName: String) async throws {
+        do {
+            try await renameProject(id: id, newName: newName)
+        } catch ProjectError.nameInUse {
+            let existing = try await fetchProjects().first { $0.id != id && NameMatch.same($0.name, newName) }
+            throw NameClashError(message: NameClash.project(existing?.name ?? newName.trimmingCharacters(in: .whitespaces)))
+        }
+    }
+}

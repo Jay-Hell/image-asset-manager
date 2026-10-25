@@ -3,7 +3,6 @@ import Foundation
 
 public enum ClientError: Error, Equatable {
     case nameInUse
-    case hasAssignedProjects
     case notFound
 }
 
@@ -74,14 +73,21 @@ extension AppDatabase {
         }
     }
 
-    /// Delete a client. Rejects with `.hasAssignedProjects` when any project still
-    /// references this client — caller must reassign those projects first.
-    public func deleteClient(id: String) async throws {
+    /// Delete a client. Its projects move to "No client" (`client_id` NULL) in the same transaction;
+    /// they and their assets stay. Returns how many projects were detached.
+    @discardableResult
+    public func deleteClient(id: String) async throws -> Int {
         try await write { db in
-            let count = try Project.filter(Column("client_id") == id).fetchCount(db)
-            if count > 0 { throw ClientError.hasAssignedProjects }
+            let detached = try Project.filter(Column("client_id") == id).fetchCount(db)
+            try db.execute(sql: "UPDATE projects SET client_id = NULL WHERE client_id = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM clients WHERE id = ?", arguments: [id])
+            return detached
         }
+    }
+
+    /// How many projects a client has (what the delete confirmation names).
+    public func projectCount(clientID: String) async throws -> Int {
+        try await read { db in try Project.filter(Column("client_id") == clientID).fetchCount(db) }
     }
 }
 
@@ -117,9 +123,79 @@ extension AppDatabase {
         }
     }
 
+    /// Delete a project. Its assets stay in the library: each loses this link, an asset whose primary
+    /// it was takes another of its projects as primary (first by name ignoring case, then ID) or none,
+    /// and `assets.project_id` follows. A variant family filed under the project is refiled by its
+    /// members before the delete, because `variants.project_id` cascades and would take the family.
     public func deleteProject(id: String) async throws {
         try await write { db in
+            let affected = try String.fetchAll(
+                db, sql: "SELECT asset_id FROM asset_projects WHERE project_id = ?", arguments: [id])
+            try db.execute(sql: "UPDATE variants SET project_id = NULL WHERE project_id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM asset_projects WHERE project_id = ?", arguments: [id])
+            for assetID in affected { try Self.repairPrimary(assetID: assetID, db) }
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id])
+            for assetID in affected { try Self.fileVariantFamily(ofAsset: assetID, db) }
+        }
+    }
+
+    /// An asset left with links but no primary takes the first of them by name ignoring case, then
+    /// ID; `assets.project_id` then follows the primary (or goes NULL with no link).
+    static func repairPrimary(assetID: String, _ db: Database) throws {
+        let hasPrimary = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
+            arguments: [assetID]) ?? false
+        if !hasPrimary {
+            try db.execute(sql: """
+                UPDATE asset_projects SET is_primary = 1
+                WHERE asset_id = ? AND project_id = (
+                    SELECT ap.project_id FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
+                    WHERE ap.asset_id = ? ORDER BY p.name COLLATE NOCASE, p.id LIMIT 1)
+                """, arguments: [assetID, assetID])
+        }
+        try mirrorPrimaryProject(assetID: assetID, db)
+    }
+
+    /// The ⌥-drop: file assets into `to` and take them out of `from` only; their other projects
+    /// stay. If `from` was an asset's primary, `to` becomes it. With no `from` (the view is not a
+    /// project) or `from == to` this is a plain add. Each asset's variant family is refiled by its
+    /// members, as `fileAssets` does. Returns the IDs filed and those that match no asset.
+    public func moveAssets(
+        assetIDs: [String], from: String?, to: String
+    ) async throws -> (filed: [String], unknown: [String]) {
+        guard let from, from != to else {
+            return try await fileAssets(assetIDs: assetIDs, projectID: to, mode: .add, primary: false)
+        }
+        var seen: Set<String> = []
+        let ids = assetIDs.filter { seen.insert($0).inserted }
+        return try await write { db in
+            var filed: [String] = [], unknown: [String] = []
+            for id in ids {
+                guard try Asset.exists(db, key: id) else { unknown.append(id); continue }
+                let wasPrimary = try Bool.fetchOne(
+                    db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND project_id = ? AND is_primary = 1)",
+                    arguments: [id, from]) ?? false
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 0)",
+                    arguments: [id, to])
+                try db.execute(sql: "DELETE FROM asset_projects WHERE asset_id = ? AND project_id = ?", arguments: [id, from])
+                if wasPrimary {
+                    try db.execute(
+                        sql: "UPDATE asset_projects SET is_primary = (project_id = ?) WHERE asset_id = ?",
+                        arguments: [to, id])
+                }
+                try Self.repairPrimary(assetID: id, db)
+                try Self.fileVariantFamily(ofAsset: id, db)
+                filed.append(id)
+            }
+            return (filed, unknown)
+        }
+    }
+
+    /// How many assets a project holds, hidden ones included (what the delete confirmation names).
+    public func assetCount(projectID: String) async throws -> Int {
+        try await read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_projects WHERE project_id = ?", arguments: [projectID]) ?? 0
         }
     }
 }

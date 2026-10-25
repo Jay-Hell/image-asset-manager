@@ -65,7 +65,12 @@ final class LibraryViewModel {
 
     // MARK: - Multi-select
     var isSelectMode: Bool = false
-    var selectedAssetIDs: Set<String> = []
+    /// The ticked (iPad Select mode) or Mac-selected images, with the ⇧-click anchor (`GridSelection`).
+    var selection = GridSelection()
+    var selectedAssetIDs: Set<String> {
+        get { selection.selected }
+        set { selection = GridSelection(selected: newValue, anchor: selection.anchor) }
+    }
 
     // MARK: - Import
     var showImportSheet: Bool = false
@@ -110,6 +115,20 @@ final class LibraryViewModel {
         tagsWithCounts = tags.filter { $0.1 > 0 }
         variantFamilies = variants
         allVariantFamilyNames = familyNames
+        // A client or project that no longer exists cannot stay the source (deleted here or in Settings).
+        let gone: Bool
+        switch sourceSelection {
+        case .client(let id): gone = !cls.contains { $0.id == id }
+        case .project(let id): gone = !projs.contains { $0.id == id }
+        default: gone = false
+        }
+        if gone {
+            sourceSelection = .allAssets
+            selectedAssetID = nil
+            inspectorDetail = nil
+            isSelectMode = false
+            selection.clear()
+        }
     }
 
     func loadAssets() async {
@@ -151,6 +170,33 @@ final class LibraryViewModel {
         } catch {
             assets = []
         }
+        await pruneSelectionToDisplayed()
+    }
+
+    /// The image IDs on screen, in the order shown: each filmstrip's members first, then the
+    /// standalone grid (a family member lives in its filmstrip, not the grid). ⌘A and ⇧-range use this.
+    var displayedOrder: [String] {
+        var seen: Set<String> = []
+        let members = displayedVariantFamilies.flatMap { $0.1.map { $0.1.id } }
+        let standalone = assets.filter { !variantMemberIDs.contains($0.id) }.map(\.id)
+        return (members + standalone).filter { seen.insert($0).inserted }
+    }
+
+    /// A search, a hide, a move out of the viewed project or a delete can take images off the
+    /// screen. They leave the selection, and the inspector follows: an image that is gone is not
+    /// shown, and the Mac inspector shows the one image still selected (or none).
+    private func pruneSelectionToDisplayed() async {
+        let shown = Set(displayedOrder)
+        if let sid = selectedAssetID, !shown.contains(sid) {
+            selectedAssetID = nil
+            inspectorDetail = nil
+        }
+        let kept = selection.selected.intersection(shown)
+        guard kept != selection.selected else { return }
+        selection = GridSelection(selected: kept, anchor: selection.anchor.flatMap { shown.contains($0) ? $0 : nil })
+        #if os(macOS)
+        if !isSelectMode { await syncInspectorToSelection() }
+        #endif
     }
 
     /// Drops cached thumbnails no asset needs, at most once a day (`ThumbnailCache.sweepIfDue`),
@@ -165,6 +211,13 @@ final class LibraryViewModel {
 
     func selectAsset(_ assetID: String) async {
         selectedAssetID = assetID
+        #if os(macOS)
+        // Whatever calls this, the grid highlight is the image the inspector shows (not in Select mode,
+        // where the ticked set is the user's own).
+        if !isSelectMode && selection.selected != [assetID] {
+            selection = GridSelection(selected: [assetID], anchor: assetID)
+        }
+        #endif
 
         let asset: Asset?
         if let found = assets.first(where: { $0.id == assetID }) {
@@ -197,7 +250,7 @@ final class LibraryViewModel {
         selectedAssetID = nil
         inspectorDetail = nil
         isSelectMode = false
-        selectedAssetIDs = []
+        selection.clear()
         await loadAssets()
     }
 
@@ -516,6 +569,94 @@ final class LibraryViewModel {
         guard created else { throw LibraryActionError.message(NameClash.project(project.name)) }
         await loadSidebarData()
         return project
+    }
+
+    // MARK: - Manage clients and projects (R2-6)
+
+    /// Rename, refusing a name another client has in any case, with the text creating gives.
+    func renameClient(id: String, to name: String) async throws {
+        try await database.renameClientReportingClash(id: id, newName: name)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Delete a client; its projects move to "No client". Returns how many were detached.
+    @discardableResult
+    func deleteClient(id: String) async throws -> Int {
+        let detached = try await database.deleteClient(id: id)
+        await refreshAfterWrite(touching: [])
+        return detached
+    }
+
+    func renameProject(id: String, to name: String) async throws {
+        try await database.renameProjectReportingClash(id: id, newName: name)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Move a project to a client, or to none (nil).
+    func moveProject(id: String, toClient clientID: String?) async throws {
+        try await database.setProjectClient(projectID: id, clientID: clientID)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Delete a project; its images stay (Unfiled when it was their only project).
+    func deleteProject(id: String) async throws {
+        try await database.deleteProject(id: id)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// How many images a project holds, for the delete confirmation.
+    func imageCount(projectID: String) async -> Int {
+        (try? await database.assetCount(projectID: projectID)) ?? 0
+    }
+
+    /// Images dropped on a project: added (their other projects kept). With ⌥ they also leave the
+    /// project being viewed, and only that one (`moveAssets`); when the view is not a project, ⌥ is
+    /// the same as a plain drop.
+    func dropImages(_ ids: Set<String>, onto projectID: String, move: Bool) async throws {
+        var viewed: String?
+        if move, case .project(let current) = sourceSelection { viewed = current }
+        _ = try await database.moveAssets(assetIDs: Array(ids), from: viewed, to: projectID)
+        await refreshAfterWrite(touching: ids)
+    }
+
+    /// Reloads the sidebar and grid on every committed change to clients, projects, filings or
+    /// variant families, whoever made it: this window, Settings, another window, or an MCP tool call.
+    /// Runs until cancelled (the window's `.task`).
+    func observeLibraryChanges() async {
+        for await _ in database.libraryChanges() {
+            await loadSidebarData()
+            await loadAssets()
+            if let sid = selectedAssetID { await selectAsset(sid) }
+        }
+    }
+
+    // MARK: - Mac selection
+
+    /// A click in the grid with ⌘ or ⇧ held or not; the inspector follows the selection.
+    func click(_ id: String, _ kind: GridSelection.Click, order: [String]) async {
+        selection.click(id, kind, order: order)
+        await syncInspectorToSelection()
+    }
+
+    func selectAll(order: [String]) async {
+        selection.selectAll(order: order)
+        await syncInspectorToSelection()
+    }
+
+    func clearSelection() async {
+        selection.clear()
+        await syncInspectorToSelection()
+    }
+
+    /// One image selected: the inspector shows it. None or several: it shows nothing (the browser
+    /// says "N images selected").
+    private func syncInspectorToSelection() async {
+        if selection.selected.count == 1, let only = selection.selected.first {
+            await selectAsset(only)
+        } else {
+            selectedAssetID = nil
+            inspectorDetail = nil
+        }
     }
 
     // MARK: - Tag manager
