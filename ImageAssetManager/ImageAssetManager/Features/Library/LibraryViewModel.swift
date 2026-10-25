@@ -432,6 +432,8 @@ final class LibraryViewModel {
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        // Filing changes the Unfiled and project counts as well as the grid.
+        await loadSidebarData()
         await loadAssets()
         if selectedAssetID == assetID {
             await selectAsset(assetID)
