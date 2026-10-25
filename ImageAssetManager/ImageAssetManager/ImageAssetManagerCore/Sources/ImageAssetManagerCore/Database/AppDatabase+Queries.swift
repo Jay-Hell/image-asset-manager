@@ -7,6 +7,17 @@ public enum ClientError: Error, Equatable {
     case notFound
 }
 
+public enum ProjectError: Error, Equatable, LocalizedError {
+    /// Another project has this name, ignoring case and surrounding spaces (as `create_project`).
+    case nameInUse
+
+    public var errorDescription: String? {
+        switch self {
+        case .nameInUse: return "Another project already has that name (names are compared ignoring case)."
+        }
+    }
+}
+
 // MARK: - Clients
 extension AppDatabase {
     public func fetchClients() async throws -> [Client] {
@@ -75,10 +86,17 @@ extension AppDatabase {
         try await write { db in try project.insert(db) }
     }
 
+    /// Throws `ProjectError.nameInUse` when another project has the name in any case, the same
+    /// rule as `createProject`; a project may change the case of its own name.
     public func renameProject(id: String, newName: String) async throws {
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         try await write { db in
+            let collision = try Project
+                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
+                .filter(Column("id") != id)
+                .fetchCount(db)
+            if collision > 0 { throw ProjectError.nameInUse }
             try db.execute(sql: "UPDATE projects SET name = ? WHERE id = ?", arguments: [trimmed, id])
         }
     }
@@ -524,6 +542,266 @@ extension AppDatabase {
             VariantMember(variantID: variant.id, assetID: assetID, sequence: seq + 1, isSelected: seq == 0)
         )
         return variant
+    }
+}
+
+// MARK: - Clients and projects by name (MCP create_client / create_project / list_projects)
+
+/// How `file_assets` treats an asset's other projects.
+public enum FilingMode: String, Sendable, CaseIterable {
+    /// Keep them; add this one.
+    case add
+    /// Replace them all with this one, which becomes the primary.
+    case move
+}
+
+/// A project as `list_projects` reports it.
+public struct ProjectSummary: Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let description: String?
+    public let clientID: String?
+    public let clientName: String?
+    public let assetCount: Int
+    /// The latest date an asset in the project was made or imported; nil for an empty project.
+    public let lastUsedAt: String?
+    public let createdAt: String
+}
+
+extension AppDatabase {
+    /// Find a client by name in any case, or make it. Says which, so a clash is reported, not hidden.
+    public func createClient(name: String) async throws -> (client: Client, created: Bool) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { throw ClientError.nameInUse }
+        return try await write { db in
+            if let existing = try Self.clientNamed(trimmed, db) { return (existing, false) }
+            let client = Client(name: trimmed, createdAt: iso8601Now())
+            try client.insert(db)
+            return (client, true)
+        }
+    }
+
+    /// A client by UUID, else by name in any case.
+    public func findClient(idOrName: String) async throws -> Client? {
+        let trimmed = idOrName.trimmingCharacters(in: .whitespaces)
+        return try await read { db in
+            if let byID = try Client.fetchOne(db, key: trimmed) { return byID }
+            return try Self.clientNamed(trimmed, db)
+        }
+    }
+
+    /// Find a project by name in any case, or make it with this client and description. An
+    /// existing project comes back as it is: a clash never changes it and never duplicates it.
+    public func createProject(name: String, clientID: String?, description: String?) async throws -> (project: Project, created: Bool) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let about = description?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await write { db in
+            if let existing = try Project
+                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
+                .order(Column("created_at"), Column("id"))
+                .fetchOne(db) {
+                return (existing, false)
+            }
+            let project = Project(
+                name: trimmed, clientID: clientID,
+                description: (about?.isEmpty ?? true) ? nil : about, createdAt: iso8601Now())
+            try project.insert(db)
+            return (project, true)
+        }
+    }
+
+    /// Every project with its client, how many assets it holds, and when it was last used.
+    public func fetchProjectSummaries() async throws -> [ProjectSummary] {
+        try await read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT p.id, p.name, p.description, p.client_id, p.created_at, c.name AS client,
+                       (SELECT COUNT(*) FROM asset_projects ap WHERE ap.project_id = p.id) AS asset_count,
+                       (SELECT MAX(MAX(a.created_at, COALESCE(a.imported_at, a.created_at)))
+                          FROM asset_projects ap JOIN assets a ON a.id = ap.asset_id
+                         WHERE ap.project_id = p.id) AS last_used_at
+                FROM projects p
+                LEFT JOIN clients c ON c.id = p.client_id
+                ORDER BY p.name COLLATE NOCASE, p.id
+                """).map { row in
+                ProjectSummary(
+                    id: row["id"], name: row["name"], description: row["description"],
+                    clientID: row["client_id"], clientName: row["client"],
+                    assetCount: row["asset_count"], lastUsedAt: row["last_used_at"], createdAt: row["created_at"])
+            }
+        }
+    }
+
+    /// File assets to a project in one transaction. `move` replaces each asset's projects with this
+    /// one (its primary). `add` keeps them; `primary` makes this one the primary, and an asset with
+    /// no primary gets this one either way. `assets.project_id` always ends equal to the primary.
+    /// Returns the IDs filed and the IDs that match no asset, in the order given.
+    public func fileAssets(
+        assetIDs: [String], projectID: String, mode: FilingMode, primary: Bool
+    ) async throws -> (filed: [String], unknown: [String]) {
+        var seen: Set<String> = []
+        let ids = assetIDs.filter { seen.insert($0).inserted }
+        return try await write { db in
+            var filed: [String] = [], unknown: [String] = []
+            for id in ids {
+                guard try Asset.exists(db, key: id) else { unknown.append(id); continue }
+                switch mode {
+                case .move:
+                    try db.execute(sql: "DELETE FROM asset_projects WHERE asset_id = ?", arguments: [id])
+                    try db.execute(
+                        sql: "INSERT INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 1)",
+                        arguments: [id, projectID])
+                case .add:
+                    try db.execute(
+                        sql: "INSERT OR IGNORE INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 0)",
+                        arguments: [id, projectID])
+                    let hasPrimary = try Bool.fetchOne(
+                        db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
+                        arguments: [id]) ?? false
+                    if primary || !hasPrimary {
+                        try db.execute(
+                            sql: "UPDATE asset_projects SET is_primary = (project_id = ?) WHERE asset_id = ?",
+                            arguments: [projectID, id])
+                    }
+                }
+                try Self.mirrorPrimaryProject(assetID: id, db)
+                try Self.fileVariantFamily(ofAsset: id, db)
+                filed.append(id)
+            }
+            return (filed, unknown)
+        }
+    }
+
+    /// Add projects to an asset, keeping its own; the first becomes the primary only if it has none.
+    public func mergeProjects(assetID: String, projectIDs: [String]) async throws {
+        guard !projectIDs.isEmpty else { return }
+        let captured = projectIDs
+        try await write { db in
+            for pid in captured {
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 0)",
+                    arguments: [assetID, pid])
+            }
+            let hasPrimary = try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
+                arguments: [assetID]) ?? false
+            if !hasPrimary, let first = captured.first {
+                try db.execute(
+                    sql: "UPDATE asset_projects SET is_primary = 1 WHERE asset_id = ? AND project_id = ?",
+                    arguments: [assetID, first])
+            }
+            try Self.mirrorPrimaryProject(assetID: assetID, db)
+        }
+    }
+
+    /// An asset's project names, primary first.
+    public func fetchProjectNamesForAsset(assetID: String) async throws -> [String] {
+        try await read { db in
+            try String.fetchAll(db, sql: """
+                SELECT p.name FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
+                WHERE ap.asset_id = ? ORDER BY ap.is_primary DESC, p.name COLLATE NOCASE
+                """, arguments: [assetID])
+        }
+    }
+
+    /// `assets.project_id` set to the asset's primary project (or NULL when it has none).
+    static func mirrorPrimaryProject(assetID: String, _ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE assets SET project_id =
+                (SELECT project_id FROM asset_projects WHERE asset_id = ? AND is_primary = 1 LIMIT 1)
+            WHERE id = ?
+            """, arguments: [assetID, assetID])
+    }
+
+    /// The asset's variant family filed where its members are: under their primary project when
+    /// every member has the same one, else under none (`variants.project_id` NULL), so a family
+    /// split across projects shows in the whole library and under neither project. Call after
+    /// `mirrorPrimaryProject`, which this reads.
+    static func fileVariantFamily(ofAsset assetID: String, _ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE variants SET project_id = (
+                SELECT CASE WHEN COUNT(*) = COUNT(a.project_id) AND COUNT(DISTINCT a.project_id) = 1
+                            THEN MIN(a.project_id) END
+                FROM variant_members m JOIN assets a ON a.id = m.asset_id
+                WHERE m.variant_id = variants.id)
+            WHERE id IN (SELECT variant_id FROM variant_members WHERE asset_id = ?)
+            """, arguments: [assetID])
+    }
+
+    static func clientNamed(_ name: String, _ db: Database) throws -> Client? {
+        try Client
+            .filter(SQL("LOWER(name) = LOWER(\(name))"))
+            .order(Column("created_at"), Column("id"))
+            .fetchOne(db)
+    }
+}
+
+// MARK: - Tags with counts (MCP list_tags)
+extension AppDatabase {
+    /// Every tag and how many assets carry it, most used first.
+    public func fetchTagCounts() async throws -> [(name: String, count: Int)] {
+        try await read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT t.name, COUNT(at.asset_id) AS count
+                FROM tags t LEFT JOIN asset_tags at ON at.tag_id = t.id
+                GROUP BY t.id
+                ORDER BY count DESC, t.name COLLATE NOCASE
+                """).map { (name: $0["name"], count: $0["count"]) }
+        }
+    }
+
+    public func fetchTagNamesForAsset(assetID: String) async throws -> [String] {
+        try await read { db in
+            try String.fetchAll(db, sql: """
+                SELECT t.name FROM asset_tags at JOIN tags t ON t.id = at.tag_id
+                WHERE at.asset_id = ? ORDER BY t.name COLLATE NOCASE
+                """, arguments: [assetID])
+        }
+    }
+}
+
+// MARK: - Imported assets (MCP import_asset)
+extension AppDatabase {
+    /// The asset already holding these bytes, by SHA-256, if any (the oldest, should there be two).
+    public func findAsset(fileHash: String) async throws -> Asset? {
+        try await read { db in
+            try Asset.filter(Column("file_hash") == fileHash).order(Column("created_at"), Column("id")).fetchOne(db)
+        }
+    }
+
+    /// Insert an imported asset and its spend row together, unless an asset with the same hash got
+    /// there first: then nothing is written and that asset's ID comes back.
+    public func insertImportedAsset(_ asset: Asset, spend: SpendLog?) async throws -> String? {
+        try await write { db in
+            if let existing = try Asset.filter(Column("file_hash") == asset.fileHash)
+                .order(Column("created_at"), Column("id")).fetchOne(db) {
+                return existing.id
+            }
+            try asset.insert(db)
+            try spend?.insert(db)
+            return nil
+        }
+    }
+}
+
+// MARK: - Follow-up writes a second Keep can repeat
+extension AppDatabase {
+    /// The asset's lineage rows, written all together and only if it has none yet, so a Keep that
+    /// is repeated after a failure neither loses nor doubles them.
+    public func insertAssetReferencesIfNone(assetID: String, references: [AssetReference]) async throws {
+        guard !references.isEmpty else { return }
+        let captured = references
+        try await write { db in
+            let existing = try AssetReference.filter(Column("asset_id") == assetID).fetchCount(db)
+            guard existing == 0 else { return }
+            for ref in captured { try ref.insert(db) }
+        }
+    }
+
+    /// Whether the asset is a member of any variant family yet.
+    public func isInVariantFamily(assetID: String) async throws -> Bool {
+        try await read { db in
+            try VariantMember.filter(Column("asset_id") == assetID).fetchCount(db) > 0
+        }
     }
 }
 

@@ -15,9 +15,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { isAppRunning, callAppTool } from './appClient.js';
+import { ensureAppRunning, callAppTool } from './appClient.js';
 import { isOfflineTool, callFallbackTool } from './fallback.js';
-import { TOOLS } from './tools.js';
+import { TOOLS, prepareImportArgs } from './tools.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -43,11 +43,30 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args = {} } = request.params;
+  const { name, arguments: given = {} } = request.params;
+  let args = given;
+
+  // import_asset: the file is read and checked here, before the app is asked for anything. The app
+  // receives the bytes and never the path (it is sandboxed and cannot read it).
+  if (name === 'import_asset') {
+    try {
+      args = prepareImportArgs(given);
+    } catch (error) {
+      return { content: [{ type: 'text', text: error.message }], isError: true };
+    }
+  }
 
   let result;
 
-  if (await isAppRunning()) {
+  // Opens the app if it is not running and waits (at most 30 s) for it to answer with a new token.
+  let launchError = null;
+  try {
+    await ensureAppRunning();
+  } catch (error) {
+    launchError = error;
+  }
+
+  if (!launchError) {
     // App is running — forward to localhost:47821
     result = await callAppTool(name, args);
   } else if (isOfflineTool(name)) {
@@ -57,8 +76,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{
         type: 'text',
-        text: `Tool '${name}' requires the Image Asset Manager app to be running. ` +
-              `Start the app and try again.`,
+        text: `Tool '${name}' requires the Image Asset Manager app to be running. ${launchError.message}`,
       }],
       isError: true,
     };

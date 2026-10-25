@@ -138,7 +138,7 @@ final class ExportViewModel {
         isExporting = false
     }
 
-    /// SVG goes out as stored; raster presets do not apply to vector assets.
+    /// SVG goes out sanitised (ruling 8); raster presets do not apply to vector assets.
     private func exportVectorAsset(_ asset: Asset, libraryURL: URL, to destDir: URL) {
         isExporting = true
         let fileURL = libraryURL.appending(path: "assets").appending(path: asset.filename)
@@ -146,9 +146,9 @@ final class ExportViewModel {
         do {
             let data = try Data(contentsOf: fileURL)
             let outURL = try ImageExporter.exportVector(svgData: data, to: destDir, baseFilename: base)
-            exportResults = [ExportResult(presetName: "SVG as stored", outputFilename: outURL.lastPathComponent, error: nil)]
+            exportResults = [ExportResult(presetName: "SVG, sanitised", outputFilename: outURL.lastPathComponent, error: nil)]
         } catch {
-            exportResults = [ExportResult(presetName: "SVG as stored", outputFilename: "\(base).svg", error: error.localizedDescription)]
+            exportResults = [ExportResult(presetName: "SVG, sanitised", outputFilename: "\(base).svg", error: error.localizedDescription)]
         }
         isExporting = false
     }

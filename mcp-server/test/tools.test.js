@@ -133,7 +133,7 @@ test('the generation tools are defined, and generate_image stays as the alias', 
 
 /** The keys read as `args["…"]` in a stretch of Swift source. */
 function argKeys(source) {
-  return [...new Set([...source.matchAll(/\bargs\["([a-z_]+)"\]/g)].map(m => m[1]))].sort();
+  return [...new Set([...source.matchAll(/\bargs\["([a-z0-9_]+)"\]/g)].map(m => m[1]))].sort();
 }
 
 test('the generation schemas and the Swift GenerateTools dispatch agree on tool names and fields', () => {
@@ -164,6 +164,39 @@ test('the generation schemas and the Swift GenerateTools dispatch agree on tool 
   const itemKeys = [...new Set([...swift.matchAll(/\bitem\["([a-z_]+)"\]/g)].map(m => m[1]))].sort();
   const refItems = TOOLS.find(t => t.name === 'generate').inputSchema.properties.references.items.properties;
   assert.deepEqual(Object.keys(refItems).sort(), itemKeys);
+});
+
+test('the library tool schemas and the Swift LibraryTools dispatch agree on tool names and fields', () => {
+  const swift = readRepo('ImageAssetManager/ImageAssetManager/ImageAssetManagerCore/Sources/ImageAssetManagerCore/Library/LibraryTools.swift');
+  const schemas = ['create_client', 'create_project', 'list_projects', 'file_assets', 'import_asset', 'list_tags'];
+  const declared = [...swift.match(/static let toolNames: Set<String> = \[([^\]]*)\]/)[1].matchAll(/"([a-z_]+)"/g)].map(m => m[1]).sort();
+  const dispatched = [...swift.slice(swift.indexOf('public func call('), swift.indexOf('// MARK: - tool:'))
+    .matchAll(/case "([a-z_]+)":/g)].map(m => m[1]).sort();
+  assert.deepEqual(declared, [...schemas].sort());
+  assert.deepEqual(dispatched, [...schemas].sort());
+
+  // Each tool's code sits under its own `// MARK: - tool: <name>`; the keys it reads are the schema's.
+  const section = name => {
+    const start = swift.indexOf(`// MARK: - tool: ${name}`);
+    assert.ok(start > 0, `no section for ${name} in LibraryTools.swift`);
+    const end = swift.indexOf('// MARK:', start + 10);
+    return swift.slice(start, end);
+  };
+  const props = name => Object.keys(TOOLS.find(t => t.name === name)?.inputSchema.properties ?? { missing: 1 }).sort();
+  // What the proxy puts in place of `path` (prepareImportArgs), so the app never sees a path.
+  const fromProxy = ['data_base64', 'file_modified_at', 'media_type', 'original_filename'];
+  let fields = 0;
+  for (const name of schemas) {
+    const read = argKeys(section(name));
+    fields += read.length;
+    const expected = name === 'import_asset'
+      ? [...read.filter(k => !fromProxy.includes(k)), 'path'].sort()
+      : read;
+    assert.deepEqual(props(name), expected, `${name}: schema and Swift disagree`);
+  }
+  // Counted by hand: 1 + 3 + 0 + 4 + 13 + 0.
+  assert.equal(fields, 21, `read ${fields} fields from LibraryTools.swift`);
+  assert.ok(fromProxy.every(k => argKeys(section('import_asset')).includes(k)), 'the app reads every field the proxy sends');
 });
 
 test('every tool here is dispatched by the Swift server, and every Swift case is a tool here', () => {

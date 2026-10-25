@@ -116,14 +116,14 @@ public struct GenerateTools: Sendable {
         var resolvedProjects: [Project] = []
         if let raw = args["project"] as? String, !raw.isEmpty {
             guard let p = try await database.findProject(idOrName: raw) else {
-                throw MCPGenerateError.notFound("project '\(raw)'")
+                throw try await database.unknownProjectError(raw)
             }
             resolvedProjects.append(p)
         }
         if let rawList = args["projects"] as? [String] {
             for raw in rawList where !raw.isEmpty {
                 guard let p = try await database.findProject(idOrName: raw) else {
-                    throw MCPGenerateError.notFound("project '\(raw)'")
+                    throw try await database.unknownProjectError(raw)
                 }
                 if !resolvedProjects.contains(where: { $0.id == p.id }) { resolvedProjects.append(p) }
             }

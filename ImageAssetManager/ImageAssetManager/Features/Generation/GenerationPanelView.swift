@@ -464,7 +464,7 @@ struct GenerationPanelView: View {
         }
         let context = RefinementContext(
             projectName: project?.name ?? "No Project",
-            clientName: project?.clientName,
+            clientName: nil,   // looked up from the project's client_id below
             activeReferences: refs,
             similarPrompts: [],
             aspectRatio: viewModel.aspectRatio.rawValue,
@@ -476,6 +476,9 @@ struct GenerationPanelView: View {
         Task {
             let similar = (try? await viewModel.database.findSimilarPrompts(to: viewModel.promptText)) ?? []
             session.context.similarPrompts = similar
+            if let clientID = project?.clientID {
+                session.context.clientName = try? await viewModel.database.findClient(idOrName: clientID)?.name
+            }
         }
 
         #if os(macOS)

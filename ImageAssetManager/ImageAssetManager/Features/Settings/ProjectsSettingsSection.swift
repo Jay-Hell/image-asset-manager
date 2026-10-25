@@ -125,10 +125,13 @@ struct ProjectsSettingsSection: View {
         let clientID = newProjectClientID
         Task {
             do {
-                let now = ISO8601DateFormatter().string(from: Date())
-                try await env.database.insertProject(
-                    Project(name: trimmed, clientID: clientID, createdAt: now)
-                )
+                // The same find-or-create as the MCP's create_project: names are unique ignoring case.
+                let (existing, created) = try await env.database.createProject(
+                    name: trimmed, clientID: clientID, description: nil)
+                guard created else {
+                    errorMessage = "A project named \u{201C}\(existing.name)\u{201D} already exists."
+                    return
+                }
                 newProjectName = ""
                 newProjectClientID = nil
                 await reload()

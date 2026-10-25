@@ -73,6 +73,56 @@ public final class AppDatabase: Sendable {
                 """)
         }
 
+        migrator.registerMigration("v10_client_ids_and_external_spend") { db in
+            // 1. A project's client is `client_id` alone from here on. Any project an older build
+            // left with only a `client_name` gets the client of that name (matched as the app
+            // matches names: trimmed, case-insensitive), created if there is none. The column
+            // stays, unread and unwritten, because App Store 1.0.x and 1.1.0 still write it and
+            // an insert naming a dropped column would fail there. The SQL is frozen here rather
+            // than calling `findOrCreateClient`, so this migration does the same thing for ever.
+            let now = ISO8601DateFormatter().string(from: Date())
+            let named = try Row.fetchAll(db, sql: """
+                SELECT id, TRIM(client_name) AS client FROM projects
+                WHERE client_id IS NULL AND client_name IS NOT NULL AND TRIM(client_name) != ''
+                ORDER BY created_at, id
+                """)
+            for row in named {
+                let projectID: String = row["id"]
+                let name: String = row["client"]
+                let existing = try String.fetchOne(
+                    db, sql: "SELECT id FROM clients WHERE LOWER(name) = LOWER(?) ORDER BY created_at, id LIMIT 1",
+                    arguments: [name])
+                let clientID = existing ?? UUID().uuidString
+                if existing == nil {
+                    try db.execute(
+                        sql: "INSERT INTO clients (id, name, created_at) VALUES (?, ?, ?)",
+                        arguments: [clientID, name, now])
+                }
+                try db.execute(sql: "UPDATE projects SET client_id = ? WHERE id = ?", arguments: [clientID, projectID])
+            }
+
+            // 2. A project's description, set by `create_project`. Nullable: older builds insert without it.
+            try db.alter(table: "projects") { t in
+                t.add(column: "description", .text)
+            }
+
+            // 3. Where a charge came from. NULL is the app's own generation (every row so far, and
+            // every row an older build writes); `external` is a cost reported by `import_asset`.
+            try db.alter(table: "spend_log") { t in
+                t.add(column: "source", .text)
+            }
+            try db.execute(sql: "DROP VIEW spend_entries")
+            try db.execute(sql: """
+                CREATE VIEW spend_entries AS
+                SELECT asset_id, provider_id, estimated_cost, actual_cost, timestamp, source FROM spend_log
+                UNION ALL
+                SELECT NULL, provider_id, estimated_cost, actual_cost, timestamp, NULL FROM refused_spend
+                """)
+
+            // 4. `import_asset` finds a duplicate by its SHA-256.
+            try db.create(index: "assets_file_hash", on: "assets", columns: ["file_hash"])
+        }
+
         return migrator
     }
 

@@ -52,9 +52,11 @@ struct MigrationV8Tests {
         let applied = try await database.read { db in
             try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
         }
+        // Sorted as text, so "v10_…" sorts before "v9_…".
         #expect(applied.last == "v9_refused_spend")
         #expect(applied.contains("v8_asset_media_type"))
-        #expect(applied.count == 9)
+        #expect(applied.contains("v10_client_ids_and_external_spend"))
+        #expect(applied.count == 10)
     }
 
     // MARK: - Older-build compatibility (App Store 1.0.x knows v1–v7 only)

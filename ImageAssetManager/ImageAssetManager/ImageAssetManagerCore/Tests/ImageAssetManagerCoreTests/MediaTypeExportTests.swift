@@ -12,15 +12,29 @@ struct MediaTypeExportTests {
         return (dir, try AppDatabase(path: dir.appending(path: "library.db").path(percentEncoded: false)))
     }
 
-    @Test func svgExportsAsTheSameBytesWithAnSVGName() throws {
+    /// Ruling 8 (R2-1 finding 9): an imported SVG can be any file an agent named, so export writes
+    /// the sanitised copy, as the preview draws, never the stored bytes.
+    @Test func svgExportsSanitisedWithAnSVGName() throws {
         let dest = FileManager.default.temporaryDirectory.appending(path: "iam-export-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
-        let given = Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 4 4\">\r\n<!-- kept -->\r\n</svg>".utf8)
+        let given = Data("""
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4" onload="alert(1)">\
+            <script>alert(2)</script><rect width="4" height="4" fill="red"/></svg>
+            """.utf8)
 
         let out = try ImageExporter.exportVector(svgData: given, to: dest, baseFilename: "logo")
 
         #expect(out.lastPathComponent == "logo.svg")
-        #expect(try Data(contentsOf: out) == given)
+        let written = String(decoding: try Data(contentsOf: out), as: UTF8.self)
+        #expect(!written.contains("script") && !written.contains("onload") && !written.contains("alert"))
+        // The pair: the drawing itself survives.
+        #expect(written.contains("<rect") && written.contains("viewBox=\"0 0 4 4\""))
+
+        // An SVG the sanitiser cannot read is refused, and nothing is written.
+        #expect(throws: ImageExporter.ExportError.self) {
+            try ImageExporter.exportVector(svgData: Data("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect".utf8), to: dest, baseFilename: "broken")
+        }
+        #expect(!FileManager.default.fileExists(atPath: dest.appending(path: "broken.svg").path(percentEncoded: false)))
     }
 
     @Test func indexJSONCarriesMediaType() async throws {

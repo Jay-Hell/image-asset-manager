@@ -91,7 +91,12 @@ struct ClientsSettingsSection: View {
         guard !trimmed.isEmpty else { return }
         Task {
             do {
-                _ = try await env.database.findOrCreateClient(name: trimmed)
+                // The same find-or-create as the MCP's create_client: names are unique ignoring case.
+                let (existing, created) = try await env.database.createClient(name: trimmed)
+                guard created else {
+                    errorMessage = "A client named \u{201C}\(existing.name)\u{201D} already exists."
+                    return
+                }
                 newClientName = ""
                 await reload()
             } catch {

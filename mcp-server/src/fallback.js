@@ -12,6 +12,7 @@ const OFFLINE_TOOLS = new Set([
   'list_projects',
   'search_prompts',
   'get_spend',
+  'list_tags',
 ]);
 
 export function isOfflineTool(name) {
@@ -68,15 +69,29 @@ export function callFallbackTool(name, args, libraryPath) {
     }
 
     case 'list_projects': {
-      const seen = new Set();
-      const projects = [];
+      // index.json holds each asset's project IDs and names, so a project with no assets, its
+      // client and its description are known only to the app.
+      const byID = new Map();
       for (const a of assets) {
-        if (a.projectID && !seen.has(a.projectID)) {
-          seen.add(a.projectID);
-          projects.push({ id: a.projectID });
-        }
+        const ids = Array.isArray(a.projectIDs) ? a.projectIDs : (a.projectID ? [a.projectID] : []);
+        ids.forEach((id, i) => {
+          const entry = byID.get(id) ?? { id, name: a.projectNames?.[i] ?? null, asset_count: 0, last_used_at: null };
+          entry.asset_count += 1;
+          if (a.createdAt && (!entry.last_used_at || a.createdAt > entry.last_used_at)) entry.last_used_at = a.createdAt;
+          byID.set(id, entry);
+        });
       }
-      return projects;
+      return [...byID.values()];
+    }
+
+    case 'list_tags': {
+      const counts = new Map();
+      for (const a of assets) for (const t of a.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+      return {
+        tags: [...counts].map(([name, count]) => ({ name, count }))
+          .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name)),
+        note: 'Offline mode — tags on no asset are known only to the app.',
+      };
     }
 
     case 'search_prompts':
