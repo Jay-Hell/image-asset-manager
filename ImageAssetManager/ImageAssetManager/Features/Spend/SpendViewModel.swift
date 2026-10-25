@@ -16,6 +16,8 @@ final class SpendViewModel {
     var customStartDate: Date = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
     var customEndDate: Date = Date()
     var granularityOverride: SpendGranularity? = nil
+    /// Costs an import reported (`source = external`) count towards the totals unless this is off.
+    var includeExternal: Bool = true
 
     var summary: SpendSummary = SpendSummary(
         totalEstimated: 0, totalActual: 0,
@@ -80,11 +82,12 @@ final class SpendViewModel {
         let granularity = effectiveGranularity
         isLoading = true
         defer { isLoading = false }
+        let external = includeExternal
         do {
-            async let s = database.fetchSpendSummary(since: since, until: until)
-            async let t = database.fetchDailySpend(since: since, until: until, granularity: granularity)
-            async let p = database.fetchSpendByProvider(since: since, until: until)
-            async let pr = database.fetchSpendByProject(since: since, until: until)
+            async let s = database.fetchSpendSummary(since: since, until: until, includeExternal: external)
+            async let t = database.fetchDailySpend(since: since, until: until, granularity: granularity, includeExternal: external)
+            async let p = database.fetchSpendByProvider(since: since, until: until, includeExternal: external)
+            async let pr = database.fetchSpendByProject(since: since, until: until, includeExternal: external)
             summary = try await s
             timelineBuckets = try await t
             providerBreakdown = try await p

@@ -34,6 +34,8 @@ public struct SidebarCounts: Sendable, Equatable {
     /// Assets with no project.
     public var unfiled: Int = 0
     public var all: Int = 0
+
+    public init() {}
 }
 
 extension AppDatabase {

@@ -13,6 +13,9 @@ struct SpendDashboardView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     DateRangePickerView(viewModel: viewModel)
+                    Toggle("Include external spend", isOn: $viewModel.includeExternal)
+                        .toggleStyle(.switch)
+                        .help("Costs reported by imported images, not charged through this app")
                     #if os(macOS)
                     granularityPicker
                     #endif
@@ -48,6 +51,9 @@ struct SpendDashboardView: View {
         }
         .onChange(of: viewModel.customEndDate) { _, _ in
             guard viewModel.selectedPreset == .custom else { return }
+            Task { await viewModel.loadData() }
+        }
+        .onChange(of: viewModel.includeExternal) { _, _ in
             Task { await viewModel.loadData() }
         }
         .onChange(of: viewModel.granularityOverride) { _, _ in
