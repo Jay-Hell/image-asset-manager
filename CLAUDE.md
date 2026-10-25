@@ -344,7 +344,7 @@ xcodebuild test -workspace ImageAssetManager/ImageAssetManager/ImageAssetManager
   -scheme ImageAssetManagerCore -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)'
 ```
 
-**Census** (run before calling a pass done; it fails on a zero or lower-than-floor count): `MIN_CORE=412 MIN_APP=4 MIN_NODE=59 scripts/census.sh`. Floors are the last green counts; raise them when tests are added. (R2-6 and its fix cycle added seven app tests, compiled but not yet run: the file holds 11, so raise `MIN_APP` to 11 once they have passed.)
+**Census** (run before calling a pass done; it fails on a zero or lower-than-floor count): `MIN_CORE=412 MIN_APP=11 MIN_NODE=59 scripts/census.sh`. Floors are the last green counts; raise them when tests are added.
 
 **macOS app tests launch the app as their host.** Under XCTest (`TestHostIsolation.isTestHost`, from the variables XCTest sets) `AppEnvironment.make()` opens a fresh library under the temporary directory and never reads the bookmark, UserDefaults or iCloud; the window shows no library UI and the MCP listener does not start. `ImageAssetManagerTests` asserts the library the host actually opened is inside the temporary directory. Keep that test, and keep anything new at launch behind `isTestHost`.
 
