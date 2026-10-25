@@ -3,14 +3,21 @@ import Foundation
 
 extension AppDatabase {
 
-    public func fetchSpendSummary(since: String, until: String) async throws -> SpendSummary {
+    /// A condition on a spend row's `source` (v10): with `includeExternal` false, the costs
+    /// `import_asset` recorded for images made outside the app are left out. NULL is the app's own.
+    static func spendSourceCondition(includeExternal: Bool, table: String? = nil) -> String {
+        let column = table.map { "\($0).source" } ?? "source"
+        return includeExternal ? "1 = 1" : "(\(column) IS NULL OR \(column) != '\(SpendLog.externalSource)')"
+    }
+
+    public func fetchSpendSummary(since: String, until: String, includeExternal: Bool = true) async throws -> SpendSummary {
         let sql = """
             SELECT
                 COALESCE(SUM(estimated_cost), 0) AS total_estimated,
                 COALESCE(SUM(actual_cost), 0)    AS total_actual,
                 COUNT(*)                          AS generation_count
             FROM spend_entries
-            WHERE timestamp >= ? AND timestamp < ?
+            WHERE timestamp >= ? AND timestamp < ? AND \(Self.spendSourceCondition(includeExternal: includeExternal))
             """
         let args: StatementArguments = [since, until]
         return try await read { db in
@@ -30,7 +37,8 @@ extension AppDatabase {
     public func fetchDailySpend(
         since: String,
         until: String,
-        granularity: SpendGranularity
+        granularity: SpendGranularity,
+        includeExternal: Bool = true
     ) async throws -> [DailySpend] {
         let fmt = granularity.strftimeFormat
         let sql = """
@@ -39,7 +47,7 @@ extension AppDatabase {
                 COALESCE(SUM(estimated_cost), 0) AS estimated,
                 COALESCE(SUM(actual_cost), 0)    AS actual
             FROM spend_entries
-            WHERE timestamp >= ? AND timestamp < ?
+            WHERE timestamp >= ? AND timestamp < ? AND \(Self.spendSourceCondition(includeExternal: includeExternal))
             GROUP BY bucket
             ORDER BY bucket
             """
@@ -57,14 +65,14 @@ extension AppDatabase {
         }
     }
 
-    public func fetchSpendByProvider(since: String, until: String) async throws -> [ProviderSpend] {
+    public func fetchSpendByProvider(since: String, until: String, includeExternal: Bool = true) async throws -> [ProviderSpend] {
         let sql = """
             SELECT
                 provider_id,
                 COALESCE(SUM(estimated_cost), 0) AS total_estimated,
                 COUNT(*) AS generation_count
             FROM spend_entries
-            WHERE timestamp >= ? AND timestamp < ?
+            WHERE timestamp >= ? AND timestamp < ? AND \(Self.spendSourceCondition(includeExternal: includeExternal))
             GROUP BY provider_id
             ORDER BY total_estimated DESC
             """
@@ -82,7 +90,7 @@ extension AppDatabase {
         }
     }
 
-    public func fetchSpendByProject(since: String, until: String) async throws -> [ProjectSpend] {
+    public func fetchSpendByProject(since: String, until: String, includeExternal: Bool = true) async throws -> [ProjectSpend] {
         let sql = """
             SELECT
                 p.id AS project_id,
@@ -92,7 +100,7 @@ extension AppDatabase {
             FROM spend_entries sl
             LEFT JOIN assets a ON a.id = sl.asset_id
             LEFT JOIN projects p ON p.id = a.project_id
-            WHERE sl.timestamp >= ? AND sl.timestamp < ?
+            WHERE sl.timestamp >= ? AND sl.timestamp < ? AND \(Self.spendSourceCondition(includeExternal: includeExternal, table: "sl"))
             GROUP BY p.id
             ORDER BY total_estimated DESC
             """
@@ -115,7 +123,8 @@ extension AppDatabase {
     public func fetchTopAssetsBySpend(
         limit: Int,
         since: String,
-        until: String
+        until: String,
+        includeExternal: Bool = true
     ) async throws -> [(Asset, Double)] {
         let sql = """
             SELECT
@@ -123,7 +132,7 @@ extension AppDatabase {
                 COALESCE(SUM(sl.estimated_cost), 0) AS total_cost
             FROM spend_log sl
             JOIN assets a ON a.id = sl.asset_id
-            WHERE sl.timestamp >= ? AND sl.timestamp < ?
+            WHERE sl.timestamp >= ? AND sl.timestamp < ? AND \(Self.spendSourceCondition(includeExternal: includeExternal, table: "sl"))
             GROUP BY a.id
             ORDER BY total_cost DESC
             LIMIT ?

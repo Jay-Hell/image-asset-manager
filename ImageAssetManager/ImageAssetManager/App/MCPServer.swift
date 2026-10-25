@@ -1,10 +1,12 @@
 #if os(macOS)
 import Foundation
 import Network
+import OSLog
 import ImageAssetManagerCore
 
 actor MCPServer {
     static let port: UInt16 = 47821
+    private static let log = Logger(subsystem: "Ionic.ImageAssetManager", category: "MCPServer")
 
     private var listener: NWListener?
     private var authToken: String = ""
@@ -27,27 +29,16 @@ actor MCPServer {
             .appending(path: "mcp-token")
     }
 
-    /// Mint a fresh random token on every server start and write it 0600 for
-    /// the Node proxy to pick up. Loopback alone is not an auth boundary: any
-    /// local process — or a web page POSTing text/plain, which needs no CORS
+    /// A fresh random token on every server start, written 0600 for the Node proxy to pick up
+    /// once the listener is ready (`MCPTokenPublisher`, Core). Loopback alone is not an auth
+    /// boundary: any local process — or a web page POSTing text/plain, which needs no CORS
     /// preflight — can reach this port. The token is what makes /tool private.
-    private func prepareAuthToken() {
-        let bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max) }
-        authToken = bytes.map { String(format: "%02x", $0) }.joined()
-        let url = MCPServer.tokenFileURL()
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(authToken.utf8).write(to: url, options: .atomic)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            print("[MCPServer] Failed to write mcp-token: \(error)")
-        }
-    }
-
     func start() {
-        prepareAuthToken()
+        // A test host gets no publisher: it never listens and never writes the shared token.
+        guard let publisher = MCPTokenPublisher(write: { token in
+            try MCPTokenPublisher.writeTokenFile(token, to: MCPServer.tokenFileURL())
+        }) else { return }
+        authToken = publisher.token
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: .init("127.0.0.1"),
@@ -61,6 +52,12 @@ actor MCPServer {
             return
         }
         lsn.stateUpdateHandler = { state in
+            // The token file is written here, on `.ready`, and never by an instance that cannot bind.
+            do {
+                try publisher.listenerStateChanged(state)
+            } catch {
+                MCPServer.log.error("Failed to write mcp-token: \(error.localizedDescription, privacy: .public)")
+            }
             switch state {
             case .ready:   print("[MCPServer] Listening on localhost:\(MCPServer.port)")
             case .failed(let e): print("[MCPServer] Listener failed: \(e)")
@@ -106,11 +103,10 @@ actor MCPServer {
 
     /// Auth + origin gates for /tool. Returns nil when the request may proceed.
     private func gate(headers: [String: String]) -> (status: Int, body: Data)? {
-        // Bearer token — the actual auth boundary (see prepareAuthToken).
-        let supplied = (headers["authorization"] ?? "")
-            .replacingOccurrences(of: "Bearer ", with: "")
-            .trimmingCharacters(in: .whitespaces)
-        guard !authToken.isEmpty, constantTimeEquals(supplied, authToken) else {
+        // Bearer token — the actual auth boundary (see start). A refusal is logged, never the token.
+        let outcome = MCPAuth.check(authorization: headers["authorization"], expected: authToken)
+        if let message = MCPAuth.refusalMessage(outcome) {
+            MCPServer.log.notice("\(message, privacy: .public)")
             return (401, encodeError("unauthorized"))
         }
         // Host allowlist — DNS-rebinding defence.
@@ -125,14 +121,6 @@ actor MCPServer {
             return (415, encodeError("Content-Type must be application/json"))
         }
         return nil
-    }
-
-    private func constantTimeEquals(_ a: String, _ b: String) -> Bool {
-        let ab = Array(a.utf8), bb = Array(b.utf8)
-        guard ab.count == bb.count else { return false }
-        var diff: UInt8 = 0
-        for i in 0..<ab.count { diff |= ab[i] ^ bb[i] }
-        return diff == 0
     }
 
     private func readRequest(_ conn: NWConnection) async throws -> (String, String, [String: String], Data) {
@@ -249,8 +237,8 @@ actor MCPServer {
             let lineage = try await database.mcpGetAssetLineage(id: id, libraryURL: libraryURL)
             return try encode(lineage)
 
-        case "list_projects":
-            return try encode(try await database.fetchProjects())
+        case "create_client", "create_project", "list_projects", "file_assets", "import_asset", "list_tags":
+            return try await handleLibraryTool(name: name, args: args)
 
         case "search_prompts":
             let prompts = try await database.searchPrompts(
@@ -270,7 +258,8 @@ actor MCPServer {
             let summary = try await database.mcpGetSpend(
                 project: args["project"] as? String,
                 dateFrom: args["date_from"] as? String,
-                dateTo: args["date_to"] as? String
+                dateTo: args["date_to"] as? String,
+                includeExternal: (args["include_external"] as? Bool) ?? true
             )
             return try encode(summary)
 

@@ -208,6 +208,9 @@ public actor GenerationService {
         let assetID = generated.chargeID
         let assetsDir = libraryURL.appending(path: "assets")
         if let kept = try await database.fetchAsset(id: assetID) {
+            // The asset is in, but a follow-up write (projects, tags, lineage, family, index) may have
+            // failed the first time. Each one is safe to repeat, so a second Keep finishes the job.
+            try await writeFollowUps(assetID: assetID, filename: kept.filename, request: request)
             return Outcome(
                 assetID: kept.id, filename: kept.filename, fileURL: assetsDir.appending(path: kept.filename),
                 modelID: kept.modelID, providerID: kept.providerID,
@@ -268,36 +271,7 @@ public actor GenerationService {
             throw error
         }
 
-        if !request.projectIDs.isEmpty {
-            try await database.setProjectsForAsset(assetID: assetID, projectIDs: request.projectIDs)
-        }
-
-        for name in request.tags.map({ $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }) {
-            let tag = try await database.findOrCreateTag(name: name)
-            try await database.attachTag(tagID: tag.id, assetID: assetID)
-        }
-
-        for ref in request.references {
-            try await database.insertAssetReference(AssetReference(
-                assetID: assetID,
-                referenceSetID: ref.referenceSetID,
-                referenceEntryID: ref.referenceEntryID,
-                roleUsed: ref.input.role.rawValue,
-                weightUsed: ref.input.weight.map { Double($0) },
-                passedToAPI: true
-            ))
-        }
-
-        try await database.attachToVariantFamily(
-            assetID: assetID,
-            projectID: request.primaryProjectID,
-            familyName: request.variantFamilyName,
-            prompt: request.prompt,
-            filename: filename
-        )
-
-        let indexURL = libraryURL.appending(path: "index.json")
-        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        try await writeFollowUps(assetID: assetID, filename: filename, request: request)
 
         return Outcome(
             assetID: assetID,
@@ -311,6 +285,44 @@ public actor GenerationService {
             mediaType: stored.mediaType.rawValue,
             fallbackNotes: fallbackNotes
         )
+    }
+
+    /// The writes after the asset row: projects, tags, lineage, variant family, `index.json`. Every
+    /// one is safe to repeat (a replace, an insert-or-ignore, or written only when absent), so a
+    /// second Keep after one of them failed completes the set and doubles nothing.
+    private func writeFollowUps(assetID: String, filename: String, request: Request) async throws {
+        if !request.projectIDs.isEmpty {
+            try await database.setProjectsForAsset(assetID: assetID, projectIDs: request.projectIDs)
+        }
+
+        for name in request.tags.map({ $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }) {
+            let tag = try await database.findOrCreateTag(name: name)
+            try await database.attachTag(tagID: tag.id, assetID: assetID)
+        }
+
+        try await database.insertAssetReferencesIfNone(assetID: assetID, references: request.references.map { ref in
+            AssetReference(
+                assetID: assetID,
+                referenceSetID: ref.referenceSetID,
+                referenceEntryID: ref.referenceEntryID,
+                roleUsed: ref.input.role.rawValue,
+                weightUsed: ref.input.weight.map { Double($0) },
+                passedToAPI: true
+            )
+        })
+
+        if try await !database.isInVariantFamily(assetID: assetID) {
+            try await database.attachToVariantFamily(
+                assetID: assetID,
+                projectID: request.primaryProjectID,
+                familyName: request.variantFamilyName,
+                prompt: request.prompt,
+                filename: filename
+            )
+        }
+
+        let indexURL = libraryURL.appending(path: "index.json")
+        try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: libraryURL.appending(path: "assets"))
     }
 }
 

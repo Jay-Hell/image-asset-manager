@@ -10,6 +10,12 @@ public struct SpendLog: Codable, FetchableRecord, PersistableRecord, Sendable {
     public var estimatedCost: Double?
     public var actualCost: Double?
     public var timestamp: String
+    /// Where the charge came from (v10): nil for the app's own generation, `external` for a cost
+    /// an import reported (`SpendLog.externalSource`).
+    public var source: String?
+
+    /// The `source` of a cost reported by `import_asset` for an image made outside the app.
+    public static let externalSource = "external"
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -18,6 +24,7 @@ public struct SpendLog: Codable, FetchableRecord, PersistableRecord, Sendable {
         case estimatedCost = "estimated_cost"
         case actualCost = "actual_cost"
         case timestamp
+        case source
     }
 
     public init(
@@ -26,7 +33,8 @@ public struct SpendLog: Codable, FetchableRecord, PersistableRecord, Sendable {
         providerID: String,
         estimatedCost: Double? = nil,
         actualCost: Double? = nil,
-        timestamp: String
+        timestamp: String,
+        source: String? = nil
     ) {
         self.id = id
         self.assetID = assetID
@@ -34,6 +42,7 @@ public struct SpendLog: Codable, FetchableRecord, PersistableRecord, Sendable {
         self.estimatedCost = estimatedCost
         self.actualCost = actualCost
         self.timestamp = timestamp
+        self.source = source
     }
 }
 

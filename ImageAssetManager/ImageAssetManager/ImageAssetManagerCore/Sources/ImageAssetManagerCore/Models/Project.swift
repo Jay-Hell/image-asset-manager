@@ -6,9 +6,10 @@ public struct Project: Codable, FetchableRecord, PersistableRecord, Sendable {
 
     public var id: String
     public var name: String
-    /// Deprecated: kept during the v5 transition; new code should read Client via clientID.
-    public var clientName: String?
+    /// The project's client. The old `client_name` column is neither read nor written (v10).
     public var clientID: String?
+    /// Set by `create_project` (v10).
+    public var description: String?
     public var defaultProviderID: String?
     public var defaultModelID: String?
     public var activeReferenceSetID: String?
@@ -16,8 +17,7 @@ public struct Project: Codable, FetchableRecord, PersistableRecord, Sendable {
     public var createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, name
-        case clientName = "client_name"
+        case id, name, description
         case clientID = "client_id"
         case defaultProviderID = "default_provider_id"
         case defaultModelID = "default_model_id"
@@ -29,8 +29,8 @@ public struct Project: Codable, FetchableRecord, PersistableRecord, Sendable {
     public init(
         id: String = UUID().uuidString,
         name: String,
-        clientName: String? = nil,
         clientID: String? = nil,
+        description: String? = nil,
         defaultProviderID: String? = nil,
         defaultModelID: String? = nil,
         activeReferenceSetID: String? = nil,
@@ -39,8 +39,8 @@ public struct Project: Codable, FetchableRecord, PersistableRecord, Sendable {
     ) {
         self.id = id
         self.name = name
-        self.clientName = clientName
         self.clientID = clientID
+        self.description = description
         self.defaultProviderID = defaultProviderID
         self.defaultModelID = defaultModelID
         self.activeReferenceSetID = activeReferenceSetID

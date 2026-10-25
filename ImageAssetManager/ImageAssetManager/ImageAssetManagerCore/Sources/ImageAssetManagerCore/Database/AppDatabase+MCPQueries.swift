@@ -254,10 +254,14 @@ extension AppDatabase {
     public func mcpGetSpend(
         project: String?,
         dateFrom: String?,
-        dateTo: String?
+        dateTo: String?,
+        includeExternal: Bool = true
     ) async throws -> SpendSummary {
         var conditions: [String] = []
         var mutableArgs: StatementArguments = []
+        if !includeExternal {
+            conditions.append(Self.spendSourceCondition(includeExternal: false, table: "sl"))
+        }
 
         if let p = project {
             conditions.append("""
