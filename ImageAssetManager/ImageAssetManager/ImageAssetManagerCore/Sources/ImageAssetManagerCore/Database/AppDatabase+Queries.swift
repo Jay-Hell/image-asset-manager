@@ -10,9 +10,23 @@ public enum ClientError: Error, Equatable {
 public enum ProjectError: Error, Equatable, LocalizedError {
     /// Another project has this name, ignoring case and surrounding spaces (as `create_project`).
     case nameInUse
+    /// A name that matches two projects differing only in case, and neither exactly.
+    case ambiguousName(requested: String, matches: [(name: String, id: String)])
+
+    public static func == (lhs: ProjectError, rhs: ProjectError) -> Bool {
+        switch (lhs, rhs) {
+        case (.nameInUse, .nameInUse): return true
+        case (.ambiguousName(let a, let am), .ambiguousName(let b, let bm)):
+            return a == b && am.map(\.id) == bm.map(\.id)
+        default: return false
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
+        case .ambiguousName(let requested, let matches):
+            let both = matches.map { "'\($0.name)' (\($0.id))" }.joined(separator: " and ")
+            return "project '\(requested)' matches \(both), which differ only in case. Use the exact name or the ID."
         case .nameInUse: return "Another project already has that name (names are compared ignoring case)."
         }
     }
@@ -690,6 +704,7 @@ extension AppDatabase {
                     arguments: [assetID, first])
             }
             try Self.mirrorPrimaryProject(assetID: assetID, db)
+            try Self.fileVariantFamily(ofAsset: assetID, db)
         }
     }
 

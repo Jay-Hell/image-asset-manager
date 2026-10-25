@@ -19,10 +19,16 @@ extension AppDatabase {
                 return exact
             }
             let trimmed = idOrName.trimmingCharacters(in: .whitespaces)
-            return try Project
+            let matches = try Project
                 .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
                 .order(Column("created_at"), Column("id"))
-                .fetchOne(db)
+                .fetchAll(db)
+            // Two projects differing only in case (made before names were unique, or by an older
+            // build): taking the older would file to a guess. Say which two.
+            if matches.count > 1 {
+                throw ProjectError.ambiguousName(requested: idOrName, matches: matches.map { ($0.name, $0.id) })
+            }
+            return matches.first
         }
     }
 
