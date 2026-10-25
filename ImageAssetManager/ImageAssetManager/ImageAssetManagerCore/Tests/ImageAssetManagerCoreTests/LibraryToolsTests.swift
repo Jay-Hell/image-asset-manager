@@ -1,0 +1,431 @@
+import Testing
+import Foundation
+import GRDB
+@testable import ImageAssetManagerCore
+
+// Release 1.2 pass A: the library tools over MCP, driven through `LibraryTools.call` (the call site
+// the app's server uses). Assertions are on the JSON returned and on the rows written.
+
+/// The fixed "now" of every import here: 2026-10-25T08:00:00Z. Worked by hand: 2026-01-01 is
+/// 1,767,225,600; to 25 October is 297 days (25,660,800 s); plus 8 hours (28,800 s).
+private let importTime = Date(timeIntervalSince1970: 1_792_915_200)
+
+private struct LibraryRig {
+    let db: AppDatabase
+    let dir: URL
+    let tools: LibraryTools
+
+    init() throws {
+        db = try AppDatabase(path: ":memory:")
+        dir = makeTempDirectory()
+        tools = LibraryTools(database: db, libraryURL: dir, now: { importTime })
+    }
+
+    func call(_ name: String, _ arguments: [String: Any] = [:]) async throws -> [String: Any] {
+        let result = try await tools.call(name, arguments: try JSONSerialization.data(withJSONObject: arguments))
+        return try #require(try JSONSerialization.jsonObject(with: result) as? [String: Any])
+    }
+
+    func callList(_ name: String) async throws -> [[String: Any]] {
+        let result = try await tools.call(name, arguments: Data("{}".utf8))
+        return try #require(try JSONSerialization.jsonObject(with: result) as? [[String: Any]])
+    }
+
+    /// The error a call is refused with; records an issue if it is not refused.
+    func refusal(_ name: String, _ arguments: [String: Any]) async -> String {
+        do {
+            _ = try await call(name, arguments)
+            Issue.record("\(name) should have been refused")
+            return ""
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func count(_ sql: String) async throws -> Int {
+        try await db.read { db in try Int.fetchOne(db, sql: sql) ?? -1 }
+    }
+
+    func assetFiles() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.appending(path: "assets").path(percentEncoded: false))) ?? []).sorted()
+    }
+
+    /// (project name, is_primary) for an asset, by name, and its `assets.project_id`'s name.
+    func links(_ assetID: String) async throws -> (rows: [String], mirror: String?) {
+        try await db.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT p.name, ap.is_primary FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
+                WHERE ap.asset_id = ? ORDER BY p.name
+                """, arguments: [assetID]).map { row -> String in
+                let name: String = row["name"]
+                let primary: Bool = row["is_primary"]
+                return primary ? "\(name)*" : name
+            }
+            let mirror = try String.fetchOne(db, sql: """
+                SELECT p.name FROM assets a JOIN projects p ON p.id = a.project_id WHERE a.id = ?
+                """, arguments: [assetID])
+            return (rows, mirror)
+        }
+    }
+
+    /// An asset row, written directly, for the filing and listing tests.
+    func insertAsset(_ id: String, createdAt: String = "2026-10-01T09:00:00Z", importedAt: String? = nil) async throws {
+        try await db.insertAsset(Asset(
+            id: id, filename: "\(id).png", fileHash: "hash-\(id)", providerID: "nano_banana", modelID: "m",
+            createdAt: createdAt, importedAt: importedAt))
+    }
+
+    func projectID(_ name: String) async throws -> String {
+        try #require(try await db.findProject(idOrName: name)).id
+    }
+}
+
+private func dict(_ any: Any?) -> [String: Any] { (any as? [String: Any]) ?? [:] }
+
+/// A PNG signature and then `tail`, so each image has its own SHA-256.
+private func png(_ tail: [UInt8] = [1, 2, 3]) -> Data {
+    Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] + tail)
+}
+
+// MARK: - Clients and projects
+
+@Suite("create_client, create_project, list_projects")
+struct ProjectToolTests {
+
+    @Test func aClientNamedTwiceInAnyCaseIsOneClientAndTheClashSaysSo() async throws {
+        let rig = try LibraryRig()
+        let first = try await rig.call("create_client", ["name": "TfWM"])
+        let again = try await rig.call("create_client", ["name": "  tfwm "])
+        #expect(first["created"] as? Bool == true)
+        #expect(again["created"] as? Bool == false)
+        #expect(dict(again["client"])["id"] as? String == dict(first["client"])["id"] as? String)
+        #expect(dict(again["client"])["name"] as? String == "TfWM")
+        #expect(try await rig.count("SELECT COUNT(*) FROM clients") == 1)
+        // The pair: a different name is a second client.
+        let other = try await rig.call("create_client", ["name": "Ionic"])
+        #expect(other["created"] as? Bool == true)
+        #expect(try await rig.count("SELECT COUNT(*) FROM clients") == 2)
+    }
+
+    @Test func aProjectNameClashReturnsTheExistingProjectUnchangedAndWritesNoSecond() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_client", ["name": "Ionic"])
+        let first = try await rig.call("create_project", ["name": "Labs", "client": "ionic", "description": "Ionic Labs pages"])
+        let clash = try await rig.call("create_project", ["name": "LABS", "description": "something else"])
+        #expect(first["created"] as? Bool == true)
+        #expect(clash["created"] as? Bool == false)
+        let project = dict(clash["project"])
+        #expect(project["id"] as? String == dict(first["project"])["id"] as? String)
+        #expect(project["name"] as? String == "Labs")
+        #expect(project["description"] as? String == "Ionic Labs pages")
+        #expect(dict(project["client"])["name"] as? String == "Ionic")
+        #expect(try await rig.count("SELECT COUNT(*) FROM projects") == 1)
+        // The pair: another name is another project.
+        let second = try await rig.call("create_project", ["name": "Labs hero"])
+        #expect(second["created"] as? Bool == true)
+        #expect(try await rig.count("SELECT COUNT(*) FROM projects") == 2)
+    }
+
+    @Test func anUnknownClientIsRefusedWithTheClientsThereAreAndNoProjectIsWritten() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_client", ["name": "Ionic"])
+        let message = await rig.refusal("create_project", ["name": "Labs", "client": "Ionik"])
+        #expect(message.contains("client 'Ionik'"))
+        #expect(message.contains("existing clients: Ionic"))
+        #expect(message.contains("create_client"))
+        #expect(try await rig.count("SELECT COUNT(*) FROM projects") == 0)
+        #expect(try await rig.count("SELECT COUNT(*) FROM clients") == 1)
+    }
+
+    @Test func listProjectsGivesEachProjectsClientAssetCountAndLastUsedDate() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_client", ["name": "TfWM"])
+        _ = try await rig.call("create_project", ["name": "ELEMENTS", "client": "TfWM"])
+        _ = try await rig.call("create_project", ["name": "Home improvement"])
+        try await rig.insertAsset("a1", createdAt: "2026-09-24T10:00:00Z")
+        // Made in August, imported in October: last used is the import.
+        try await rig.insertAsset("a2", createdAt: "2026-08-06T10:00:00Z", importedAt: "2026-10-20T10:00:00Z")
+        try await rig.insertAsset("a3", createdAt: "2026-10-23T10:00:00Z")
+        let elements = try await rig.projectID("ELEMENTS")
+        _ = try await rig.db.fileAssets(assetIDs: ["a1", "a2"], projectID: elements, mode: .add, primary: false)
+
+        let projects = try await rig.callList("list_projects")
+        #expect(projects.map { $0["name"] as? String } == ["ELEMENTS", "Home improvement"])
+        let first = projects[0], second = projects[1]
+        #expect(dict(first["client"])["name"] as? String == "TfWM")
+        #expect(first["asset_count"] as? Int == 2)
+        #expect(first["last_used_at"] as? String == "2026-10-20T10:00:00Z")
+        #expect(second["client"] is NSNull)
+        #expect(second["asset_count"] as? Int == 0)
+        #expect(second["last_used_at"] is NSNull)
+    }
+
+    @Test func generateRefusesAnUnknownProjectListingTheProjectsAndSendsNothing() async throws {
+        let rig = try await ToolsRig.make()
+        _ = try await rig.db.createProject(name: "Labs", clientID: nil, description: nil)
+        _ = try await rig.db.createProject(name: "ELEMENTS", clientID: nil, description: nil)
+        do {
+            _ = try await rig.call("generate", ["prompt": "p", "quality": "standard", "project": "Lab"])
+            Issue.record("an unknown project should be refused")
+        } catch {
+            #expect(error.localizedDescription.contains("project 'Lab'"))
+            #expect(error.localizedDescription.contains("existing projects: ELEMENTS, Labs"))
+            #expect(error.localizedDescription.contains("create_project"))
+        }
+        #expect(rig.google.requests.isEmpty && rig.openRouter.requests.isEmpty)
+        // The pair: the same name in another case is the project, and the image is filed to it.
+        let result = try await rig.call("generate", ["prompt": "p", "quality": "standard", "project": "labs"])
+        let id = try #require((result["generated"] as? [[String: Any]])?.first?["asset_id"] as? String)
+        #expect(try await rig.db.fetchProjectNamesForAsset(assetID: id) == ["Labs"])
+    }
+}
+
+// MARK: - file_assets
+
+@Suite("file_assets")
+struct FileAssetsToolTests {
+
+    /// a1 in P1 (primary) and P2; P3 exists and holds nothing.
+    private func filedRig() async throws -> LibraryRig {
+        let rig = try LibraryRig()
+        for name in ["P1", "P2", "P3"] { _ = try await rig.call("create_project", ["name": name]) }
+        try await rig.insertAsset("a1")
+        try await rig.db.setProjectsForAsset(assetID: "a1", projectIDs: [try await rig.projectID("P1"), try await rig.projectID("P2")])
+        return rig
+    }
+
+    @Test func moveReplacesEveryProjectAndTheNewOneIsThePrimaryOnBothSides() async throws {
+        let rig = try await filedRig()
+        let result = try await rig.call("file_assets", ["asset_ids": ["a1"], "project": "P3", "mode": "move"])
+        #expect(result["filed"] as? Int == 1)
+        let links = try await rig.links("a1")
+        #expect(links.rows == ["P3*"])
+        #expect(links.mirror == "P3")
+        #expect(dict((result["results"] as? [Any])?.first)["projects"] as? [String] == ["P3"])
+    }
+
+    @Test func addKeepsTheOtherProjectsAndThePrimary() async throws {
+        let rig = try await filedRig()
+        _ = try await rig.call("file_assets", ["asset_ids": ["a1"], "project": "P3"])
+        let links = try await rig.links("a1")
+        #expect(links.rows == ["P1*", "P2", "P3"])
+        #expect(links.mirror == "P1")
+    }
+
+    @Test func addWithPrimaryMovesThePrimaryAndTheMirrorFollows() async throws {
+        let rig = try await filedRig()
+        _ = try await rig.call("file_assets", ["asset_ids": ["a1"], "project": "P3", "mode": "add", "primary": true])
+        let links = try await rig.links("a1")
+        #expect(links.rows == ["P1", "P2", "P3*"])
+        #expect(links.mirror == "P3")
+    }
+
+    @Test func anUnknownIDIsReportedForThatIDAndTheRestAreFiled() async throws {
+        let rig = try await filedRig()
+        try await rig.insertAsset("a2")
+        let result = try await rig.call("file_assets", ["asset_ids": ["a1", "no-such-asset", "a2"], "project": "P3"])
+        #expect(result["filed"] as? Int == 2)
+        #expect(result["unknown"] as? [String] == ["no-such-asset"])
+        let statuses = ((result["results"] as? [[String: Any]]) ?? []).map { "\($0["asset_id"] ?? ""):\($0["status"] ?? "")" }
+        #expect(statuses == ["a1:filed", "a2:filed", "no-such-asset:unknown"])
+        #expect(try await rig.count("SELECT COUNT(*) FROM asset_projects WHERE asset_id = 'no-such-asset'") == 0)
+        #expect(try await rig.links("a2").rows == ["P3*"])     // an asset with no primary gets this one
+        // Every ID unknown is still an answer that names them, not a silent nothing.
+        let none = try await rig.call("file_assets", ["asset_ids": ["x", "y"], "project": "P3"])
+        #expect(none["filed"] as? Int == 0)
+        #expect(none["unknown"] as? [String] == ["x", "y"])
+    }
+
+    @Test func anUnknownProjectIsRefusedWithTheListAndNothingChanges() async throws {
+        let rig = try await filedRig()
+        let message = await rig.refusal("file_assets", ["asset_ids": ["a1"], "project": "P4", "mode": "move"])
+        #expect(message.contains("existing projects: P1, P2, P3"))
+        #expect(try await rig.links("a1").rows == ["P1*", "P2"])
+    }
+}
+
+// MARK: - import_asset
+
+@Suite("import_asset")
+struct ImportAssetToolTests {
+
+    private func args(_ data: Data, _ extra: [String: Any] = [:]) -> [String: Any] {
+        var args: [String: Any] = [
+            "data_base64": data.base64EncodedString(),
+            "media_type": "image/png",
+            "original_filename": "labs-hero.png",
+            "file_modified_at": "2026-10-23T18:40:12.345Z",
+        ]
+        for (key, value) in extra { args[key] = value }
+        return args
+    }
+
+    @Test func anImportStoresTheBytesWithItsLineageAndAKnownCostAsExternalSpend() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_project", ["name": "Labs"])
+        let bytes = png([9, 9, 9])
+        let result = try await rig.call("import_asset", args(bytes, [
+            "prompt": "a glass lab at dusk", "provider": "openrouter", "model": "vendor/some-model",
+            "actual_cost_gbp": 0.04, "project": "Labs", "tags": ["hero"], "variant_family": "Labs heroes",
+        ]))
+        let id = try #require(result["asset_id"] as? String)
+        #expect(result["duplicate"] as? Bool == false)
+        #expect(result["media_type"] as? String == "image/png")
+        #expect(result["projects"] as? [String] == ["Labs"])
+        #expect(result["tags"] as? [String] == ["hero"])
+        #expect(result["spend_recorded"] as? Bool == true)
+
+        let asset = try #require(try await rig.db.fetchAsset(id: id))
+        #expect(asset.mediaType == "image/png")
+        #expect(asset.fileHash == bytes.sha256)
+        #expect(asset.prompt == "a glass lab at dusk")
+        #expect(asset.providerID == "openrouter")
+        #expect(asset.modelID == "vendor/some-model")
+        #expect(asset.actualCost == 0.04)
+        // Q3: made when the file was last written (to the second); imported now.
+        #expect(asset.createdAt == "2026-10-23T18:40:12Z")
+        #expect(asset.importedAt == "2026-10-25T08:00:00Z")
+        #expect(try Data(contentsOf: rig.dir.appending(path: "assets").appending(path: asset.filename)) == bytes)
+        #expect(try await rig.links(id).rows == ["Labs*"])
+        let family = try await rig.db.read { db in
+            try String.fetchOne(db, sql: "SELECT v.name FROM variant_members m JOIN variants v ON v.id = m.variant_id WHERE m.asset_id = ?", arguments: [id])
+        }
+        #expect(family == "Labs heroes")
+        // Q2: one spend row, marked external, at the cost given, dated when the image was made.
+        let spend = try await rig.db.read { db in try SpendLog.fetchAll(db) }
+        #expect(spend.count == 1)
+        #expect(spend.first?.assetID == id)
+        #expect(spend.first?.actualCost == 0.04)
+        #expect(spend.first?.estimatedCost == 0.04)
+        #expect(spend.first?.source == "external")
+        #expect(spend.first?.timestamp == "2026-10-23T18:40:12Z")
+        // index.json carries it, so the offline fallback sees it too.
+        let index = try String(contentsOf: rig.dir.appending(path: "index.json"), encoding: .utf8)
+        #expect(index.contains(id))
+    }
+
+    @Test func theCallersCreatedAtWinsOverTheFilesDateAndWithNeitherItIsTheImportTime() async throws {
+        let rig = try LibraryRig()
+        let given = try await rig.call("import_asset", args(png([1]), ["created_at": "2026-09-24T12:00:00Z"]))
+        #expect(given["created_at"] as? String == "2026-09-24T12:00:00Z")
+        #expect(given["imported_at"] as? String == "2026-10-25T08:00:00Z")
+        var bare = args(png([2]))
+        bare["file_modified_at"] = nil
+        let neither = try await rig.call("import_asset", bare)
+        #expect(neither["created_at"] as? String == "2026-10-25T08:00:00Z")
+        let message = await rig.refusal("import_asset", args(png([3]), ["created_at": "last Tuesday"]))
+        #expect(message.contains("created_at 'last Tuesday'"))
+    }
+
+    @Test func anUnknownCostIsNullNeverZeroAndWritesNoSpend() async throws {
+        let rig = try LibraryRig()
+        let result = try await rig.call("import_asset", args(png()))
+        let id = try #require(result["asset_id"] as? String)
+        let asset = try #require(try await rig.db.fetchAsset(id: id))
+        #expect(asset.actualCost == nil)
+        #expect(asset.estimatedCost == nil)
+        #expect(result["actual_cost_gbp"] is NSNull)
+        #expect(result["spend_recorded"] as? Bool == false)
+        #expect(try await rig.count("SELECT COUNT(*) FROM spend_log") == 0)
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets WHERE actual_cost = 0 OR estimated_cost = 0") == 0)
+    }
+
+    @Test func externalSpendCanBeLeftOutOfGetSpendAndTheDashboardTotals() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("import_asset", args(png([4]), ["actual_cost_gbp": 0.25]))
+        // And one charge of the app's own, as generation writes it (no source).
+        try await rig.insertAsset("own", createdAt: "2026-10-24T10:00:00Z")
+        try await rig.db.insertSpendLog(SpendLog(assetID: "own", providerID: "nano_banana", estimatedCost: 0.03, actualCost: nil, timestamp: "2026-10-24T10:00:00Z"))
+
+        let all = try await rig.db.mcpGetSpend(project: nil, dateFrom: nil, dateTo: nil)
+        let own = try await rig.db.mcpGetSpend(project: nil, dateFrom: nil, dateTo: nil, includeExternal: false)
+        // Worked by hand: 0.25 + 0.03 = 0.28 over two; without the import 0.03 over one.
+        #expect(all.generationCount == 2)
+        #expect(abs(all.totalEstimated - 0.28) < 1e-9)
+        #expect(own.generationCount == 1)
+        #expect(abs(own.totalEstimated - 0.03) < 1e-9)
+        let dashboard = try await rig.db.fetchSpendSummary(since: "2000-01-01", until: "2100-01-01", includeExternal: false)
+        #expect(dashboard.generationCount == 1)
+        let byProvider = try await rig.db.fetchSpendByProvider(since: "2000-01-01", until: "2100-01-01", includeExternal: false)
+        #expect(byProvider.map(\.providerID) == ["nano_banana"])
+        let daily = try await rig.db.fetchDailySpend(since: "2000-01-01", until: "2100-01-01", granularity: .day)
+        #expect(abs(daily.reduce(0) { $0 + $1.estimated } - 0.28) < 1e-9)
+    }
+
+    @Test func aDuplicateIsNotStoredAgainAndItsProjectsAndTagsAreMerged() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_project", ["name": "Labs"])
+        _ = try await rig.call("create_project", ["name": "Ionic Test"])
+        let bytes = png([7, 7])
+        let first = try await rig.call("import_asset", args(bytes, ["project": "Labs", "tags": ["hero"]]))
+        let second = try await rig.call("import_asset", args(bytes, [
+            "project": "Ionic Test", "tags": ["film"], "actual_cost_gbp": 0.04, "prompt": "another prompt",
+        ]))
+        let id = try #require(first["asset_id"] as? String)
+        #expect(second["asset_id"] as? String == id)
+        #expect(second["duplicate"] as? Bool == true)
+        #expect(second["spend_recorded"] as? Bool == false)
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 1)
+        #expect(rig.assetFiles().count == 1)
+        #expect(try await rig.count("SELECT COUNT(*) FROM spend_log") == 0)
+        #expect(try await rig.links(id).rows == ["Ionic Test", "Labs*"])     // merged; the first stays primary
+        #expect(second["tags"] as? [String] == ["film", "hero"])
+        #expect(try await rig.db.fetchAsset(id: id)?.prompt == nil)         // the existing record is not rewritten
+        // The pair: one byte different is a new asset.
+        let other = try await rig.call("import_asset", args(png([7, 8])))
+        #expect(other["duplicate"] as? Bool == false)
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 2)
+    }
+
+    @Test func bytesThatAreNotWhatTheyAreLabelledAreRefusedAndNothingIsWritten() async throws {
+        let rig = try LibraryRig()
+        var labelled = args(png())
+        labelled["media_type"] = "image/svg+xml"
+        let message = await rig.refusal("import_asset", labelled)
+        #expect(message.contains("labelled 'image/svg+xml' but its contents are 'image/png'"))
+        var text = args(Data("just some text".utf8))
+        text["media_type"] = "image/png"
+        _ = await rig.refusal("import_asset", text)
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 0)
+        #expect(rig.assetFiles().isEmpty)
+    }
+
+    @Test func aFileOverTwentyFiveMegabytesIsRefusedAndOneAtTheLimitIsStored() async throws {
+        let rig = try LibraryRig()
+        let limit = 25 * 1024 * 1024            // 26,214,400 bytes
+        let over = png([UInt8](repeating: 0, count: limit + 1 - 8))
+        let message = await rig.refusal("import_asset", args(over))
+        #expect(message.contains("26214401 bytes, over the 26214400-byte import limit"))
+        #expect(rig.assetFiles().isEmpty)
+        let at = png([UInt8](repeating: 0, count: limit - 8))
+        let stored = try await rig.call("import_asset", args(at))
+        #expect(stored["duplicate"] as? Bool == false)
+        #expect(rig.assetFiles().count == 1)
+    }
+
+    @Test func anUnknownProjectIsRefusedBeforeAnythingIsStored() async throws {
+        let rig = try LibraryRig()
+        _ = try await rig.call("create_project", ["name": "Labs"])
+        let message = await rig.refusal("import_asset", args(png(), ["projects": ["Labs", "Lab"]]))
+        #expect(message.contains("project 'Lab'"))
+        #expect(message.contains("existing projects: Labs"))
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 0)
+        #expect(rig.assetFiles().isEmpty)
+    }
+}
+
+// MARK: - list_tags
+
+@Suite("list_tags")
+struct ListTagsToolTests {
+    @Test func everyTagWithItsCountMostUsedFirst() async throws {
+        let rig = try LibraryRig()
+        for id in ["a1", "a2", "a3"] { try await rig.insertAsset(id) }
+        try await rig.db.bulkAddTagToAssets(assetIDs: ["a1", "a2", "a3"], tagName: "tfwm-elements")
+        try await rig.db.bulkAddTagToAssets(assetIDs: ["a2"], tagName: "film")
+        _ = try await rig.db.findOrCreateTag(name: "unused")
+        let result = try await rig.call("list_tags")
+        let tags = ((result["tags"] as? [[String: Any]]) ?? []).map { "\($0["name"] ?? ""):\($0["count"] ?? "")" }
+        #expect(tags == ["tfwm-elements:3", "film:1", "unused:0"])
+    }
+}
