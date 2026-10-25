@@ -364,9 +364,48 @@ struct ThumbnailCacheTests {
         let cache = ThumbnailCache(directory: work.appending(path: "Thumbs"))
         _ = await cache.thumbnail(assetID: "a1", fileHash: "old", source: source)
         _ = await cache.thumbnail(assetID: "a2", fileHash: "keep", source: source)
+        // A stray file beside the asset folders: a store lists only its own asset's folder.
+        let stray = work.appending(path: "Thumbs/stray.png")
+        try Data("x".utf8).write(to: stray)
         _ = await cache.thumbnail(assetID: "a1", fileHash: "new", source: source)
-        let names = try FileManager.default.contentsOfDirectory(atPath: work.appending(path: "Thumbs").path(percentEncoded: false)).sorted()
-        #expect(names == ["a1-new-512.png", "a2-keep-512.png"])
+        func names(_ sub: String) throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: work.appending(path: "Thumbs/\(sub)").path(percentEncoded: false)).sorted()
+        }
+        #expect(try names("") == ["a1", "a2", "stray.png"])
+        #expect(try names("a1") == ["a1-new-512.png"])
+        #expect(try names("a2") == ["a2-keep-512.png"])
+    }
+
+    /// Worked by hand. Before: a1/ holds h1 at 512 (current) and 256 (old size) and h0 (old hash);
+    /// gone/ is a deleted asset's; a1-h0-512.png is the first layout's flat file; notes.txt is not
+    /// the cache's. Sweep keeping a1@h1: a1/a1-h1-512.png, notes.txt and the marker remain.
+    /// An hour on, a new orphan stays (not due); 25 hours on, it goes.
+    @Test func theSweepDropsWhatNoLiveAssetNeedsAtMostOnceADay() async throws {
+        let work = makeTempDirectory()
+        let thumbs = work.appending(path: "Thumbs")
+        let cache = ThumbnailCache(directory: thumbs)
+        let manager = FileManager.default
+        func put(_ path: String) throws {
+            let url = thumbs.appending(path: path)
+            try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: url)
+        }
+        for path in ["a1/a1-h1-512.png", "a1/a1-h1-256.png", "a1/a1-h0-512.png", "gone/gone-h-512.png",
+                     "a1-h0-512.png", "notes.txt"] { try put(path) }
+        func listing() -> [String] {
+            (manager.subpaths(atPath: thumbs.path(percentEncoded: false)) ?? []).sorted()
+        }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let live = [(id: "a1", fileHash: "h1")]
+
+        #expect(await cache.sweepIfDue(liveAssets: live, now: start))
+        #expect(listing() == [".last-sweep", "a1", "a1/a1-h1-512.png", "notes.txt"])
+
+        try put("late/late-h-512.png")
+        #expect(await cache.sweepIfDue(liveAssets: live, now: start.addingTimeInterval(3600)) == false)
+        #expect(listing().contains("late/late-h-512.png"))
+        #expect(await cache.sweepIfDue(liveAssets: live, now: start.addingTimeInterval(25 * 3600)))
+        #expect(listing() == [".last-sweep", "a1", "a1/a1-h1-512.png", "notes.txt"])
     }
 
     @Test func anSVGThumbnailComesFromTheSanitisedPreview() async throws {

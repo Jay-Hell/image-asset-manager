@@ -48,9 +48,50 @@ public struct ThumbnailCache: Sendable {
         "\(clean(assetID))-\(clean(fileHash))-\(pixelSize).png"
     }
 
-    /// The file `key` is cached in.
+    /// The file `key` is cached in: one folder per asset, so a store lists only that asset's files.
     public func cacheURL(assetID: String, fileHash: String) -> URL {
-        directory.appending(path: Self.key(assetID: assetID, fileHash: fileHash))
+        directory.appending(path: Self.clean(assetID), directoryHint: .isDirectory)
+            .appending(path: Self.key(assetID: assetID, fileHash: fileHash))
+    }
+
+    /// The sweep runs at most this often.
+    public static let sweepInterval: TimeInterval = 24 * 60 * 60
+
+    private var sweepMarker: URL { directory.appending(path: ".last-sweep") }
+
+    /// Removes every cached file no live asset needs (a deleted asset's folder, an older hash or
+    /// pixel size, the flat files of the first layout), at most once per `sweepInterval`, timed
+    /// by a marker in the folder. Returns whether it swept. Nonisolated async, so it runs off
+    /// the main thread; the app also calls it from a detached task.
+    @discardableResult
+    public func sweepIfDue(liveAssets: [(id: String, fileHash: String)], now: Date = Date()) async -> Bool {
+        let manager = FileManager.default
+        if let text = try? String(contentsOf: sweepMarker, encoding: .utf8),
+           let last = ISO8601DateFormatter().date(from: text),
+           now >= last, now.timeIntervalSince(last) < Self.sweepInterval {
+            return false
+        }
+        var wanted: [String: String] = [:]
+        for asset in liveAssets { wanted[Self.clean(asset.id)] = Self.key(assetID: asset.id, fileHash: asset.fileHash) }
+        for name in (try? manager.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
+        where name != sweepMarker.lastPathComponent {
+            let entry = directory.appending(path: name)
+            var isFolder: ObjCBool = false
+            manager.fileExists(atPath: entry.path(percentEncoded: false), isDirectory: &isFolder)
+            // Only the cache's own shapes are ever removed: a key-named folder or a .png.
+            guard isFolder.boolValue ? Self.clean(name) == name : name.hasSuffix(".png") else { continue }
+            guard let keep = wanted[name] else {
+                try? manager.removeItem(at: entry)
+                continue
+            }
+            for file in (try? manager.contentsOfDirectory(atPath: entry.path(percentEncoded: false))) ?? []
+            where file != keep && file.hasSuffix(".png") {
+                try? manager.removeItem(at: entry.appending(path: file))
+            }
+        }
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? Data(ISO8601DateFormatter().string(from: now).utf8).write(to: sweepMarker, options: .atomic)
+        return true
     }
 
     /// The thumbnail for an asset's file: the cached one if there is one, else drawn from
@@ -66,12 +107,13 @@ public struct ThumbnailCache: Sendable {
     private func store(_ image: CGImage, assetID: String, at url: URL) {
         guard !Self.clean(assetID).isEmpty else { return }   // nothing to key on: draw, don't cache
         let manager = FileManager.default
-        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        // An older hash of the same asset is dead weight: drop it.
-        let prefix = "\(Self.clean(assetID))-"
-        for name in (try? manager.contentsOfDirectory(atPath: directory.path(percentEncoded: false))) ?? []
-        where name.hasPrefix(prefix) && name != url.lastPathComponent {
-            try? manager.removeItem(at: directory.appending(path: name))
+        let folder = url.deletingLastPathComponent()
+        try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        // An older hash of the same asset is dead weight: drop it. Only this asset's own folder
+        // is listed, never the whole cache.
+        for name in (try? manager.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? []
+        where name != url.lastPathComponent {
+            try? manager.removeItem(at: folder.appending(path: name))
         }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return }

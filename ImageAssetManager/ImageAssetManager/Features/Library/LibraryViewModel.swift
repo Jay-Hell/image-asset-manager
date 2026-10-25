@@ -153,6 +153,16 @@ final class LibraryViewModel {
         }
     }
 
+    /// Drops cached thumbnails no asset needs, at most once a day (`ThumbnailCache.sweepIfDue`),
+    /// on a detached task. A failed read sweeps nothing rather than everything.
+    func sweepThumbnailsIfDue() {
+        let database = self.database
+        Task.detached(priority: .utility) {
+            guard let all = try? await database.searchAssets(showHidden: true) else { return }
+            await ThumbnailCache.shared.sweepIfDue(liveAssets: all.map { (id: $0.id, fileHash: $0.fileHash) })
+        }
+    }
+
     func selectAsset(_ assetID: String) async {
         selectedAssetID = assetID
 
