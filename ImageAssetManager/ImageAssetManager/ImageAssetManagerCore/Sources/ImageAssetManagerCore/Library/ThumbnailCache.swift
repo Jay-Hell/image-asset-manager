@@ -17,10 +17,29 @@ public struct ThumbnailCache: Sendable {
         self.directory = directory
     }
 
-    /// The app's shared cache: `Caches/Thumbnails` in the app container.
-    public static let shared = ThumbnailCache(
-        directory: (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory).appending(path: "Thumbnails", directoryHint: .isDirectory))
+    /// The app's shared cache: `Caches/Thumbnails` in the app container (inside the override
+    /// library when a debug build has one).
+    public static let shared = ThumbnailCache(directory: sharedDirectory())
+
+    static func sharedDirectory() -> URL {
+        #if DEBUG
+        return sharedDirectory(debug: DebugLibrary.current)
+        #else
+        return containerDirectory()
+        #endif
+    }
+
+    #if DEBUG
+    static func sharedDirectory(debug: DebugLibrary.Session) -> URL {
+        if let library = debug.library { return DebugLibrary.thumbnailDirectory(in: library) }
+        return containerDirectory()
+    }
+    #endif
+
+    private static func containerDirectory() -> URL {
+        (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory).appending(path: "Thumbnails", directoryHint: .isDirectory)
+    }
 
     /// The cached file's name. The asset and the file hash are both in it, so a replaced file
     /// (new hash) is a new entry; anything outside letters, digits, `-` and `_` is dropped so a

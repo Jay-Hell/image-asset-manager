@@ -108,6 +108,22 @@ public final class CatalogueStore: @unchecked Sendable {
     /// Application Support, in its own folder: the library's fallback location is
     /// `Application Support/ImageAssetManager`, and the cache must never sit in a library.
     public static func defaultDirectory() -> URL {
+        #if DEBUG
+        return defaultDirectory(debug: DebugLibrary.current)
+        #else
+        return containerDirectory()
+        #endif
+    }
+
+    #if DEBUG
+    /// With a debug library override, the cache is inside that library, never the container's.
+    static func defaultDirectory(debug: DebugLibrary.Session) -> URL {
+        if let library = debug.library { return DebugLibrary.catalogueDirectory(in: library) }
+        return containerDirectory()
+    }
+    #endif
+
+    private static func containerDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appending(path: "ImageAssetManagerCatalogue", directoryHint: .isDirectory)
     }
