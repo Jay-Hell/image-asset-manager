@@ -10,6 +10,8 @@ struct AssetGridView: View {
     @State private var showClearTagsConfirmation: Bool = false
     @State private var showNewTagSheet: Bool = false
     @State private var newTagName: String = ""
+    /// A filing that failed, shown in an alert rather than looking like nothing happened.
+    @State private var filingError: String?
 
     private let minTileWidth: CGFloat = 160
     private let spacing: CGFloat = 4
@@ -112,6 +114,14 @@ struct AssetGridView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isSelectMode)
+        .alert("Filing Failed", isPresented: .init(
+            get: { filingError != nil },
+            set: { if !$0 { filingError = nil } }
+        )) {
+            Button("OK") { filingError = nil }
+        } message: {
+            Text(filingError ?? "")
+        }
         .confirmationDialog(
             "Delete \(viewModel.selectedAssetIDs.count) asset\(viewModel.selectedAssetIDs.count == 1 ? "" : "s")?",
             isPresented: $showDeleteConfirmation,
@@ -272,7 +282,13 @@ struct AssetGridView: View {
             Menu(mode == .add ? "Add to project…" : "Move to project…") {
                 ForEach(viewModel.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, id: \.id) { project in
                     Button(project.name) {
-                        Task { try? await viewModel.file(ids, to: project.id, mode: mode) }
+                        Task {
+                            do {
+                                try await viewModel.file(ids, to: project.id, mode: mode)
+                            } catch {
+                                filingError = error.localizedDescription
+                            }
+                        }
                     }
                 }
             }

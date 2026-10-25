@@ -315,18 +315,39 @@ struct R21LeftoverTests {
                 assetID: id, projectID: nil, familyName: "Heroes", prompt: nil, filename: "\(id).png")
         }
         _ = try await db.fileAssets(assetIDs: ["b"], projectID: p1, mode: .move, primary: true)
+        func familyProject(of asset: String) async throws -> String? {
+            try await db.read { try String.fetchOne($0, sql: """
+                SELECT v.project_id FROM variants v JOIN variant_members m ON m.variant_id = v.id WHERE m.asset_id = ?
+                """, arguments: [asset]) }
+        }
+        #expect(try await familyProject(of: "a") == nil)
+        try await db.mergeProjects(assetID: "a", projectIDs: [p1])
+        #expect(try await familyProject(of: "a") == p1)
+    }
+
+    /// The pair, on its own family so it holds with or without the rule: c and d are filed to P1
+    /// by `fileAssets`, which files their family there. Merging P2 into c (not the primary)
+    /// leaves the family in P1.
+    @Test func mergeProjectsLeavesAFamilyFiledElsewhereWhereItIs() async throws {
+        let db = try makeDB()
+        try await addAsset(db, "c"); try await addAsset(db, "d")
+        let p1 = try await addProject(db, "P1")
+        let p2 = try await addProject(db, "P2")
+        for id in ["c", "d"] {
+            _ = try await db.attachToVariantFamily(
+                assetID: id, projectID: nil, familyName: "Pair", prompt: nil, filename: "\(id).png")
+        }
+        _ = try await db.fileAssets(assetIDs: ["c", "d"], projectID: p1, mode: .move, primary: true)
         func familyProject() async throws -> String? {
             try await db.read { try String.fetchOne($0, sql: """
-                SELECT v.project_id FROM variants v JOIN variant_members m ON m.variant_id = v.id WHERE m.asset_id = 'a'
+                SELECT v.project_id FROM variants v JOIN variant_members m ON m.variant_id = v.id WHERE m.asset_id = 'c'
                 """) }
         }
-        #expect(try await familyProject() == nil)
-        try await db.mergeProjects(assetID: "a", projectIDs: [p1])
         #expect(try await familyProject() == p1)
-        // The pair: merging a second project (not the primary) leaves the family where it is.
-        let p2 = try await addProject(db, "P2")
-        try await db.mergeProjects(assetID: "a", projectIDs: [p2])
+        try await db.mergeProjects(assetID: "c", projectIDs: [p2])
         #expect(try await familyProject() == p1)
+        let primary = try await db.read { try String.fetchOne($0, sql: "SELECT project_id FROM assets WHERE id = 'c'") }
+        #expect(primary == p1)
     }
 }
 
