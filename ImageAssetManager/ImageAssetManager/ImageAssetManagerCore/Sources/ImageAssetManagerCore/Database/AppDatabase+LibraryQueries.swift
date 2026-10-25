@@ -47,11 +47,17 @@ extension AppDatabase {
         }
     }
 
-    public func fetchTagsWithCounts() async throws -> [(Tag, Int)] {
+    /// Each tag and its asset count for the sidebar. Hidden assets are left out unless
+    /// `showHidden`, as the grid (`searchAssets`) and `fetchSidebarCounts` do.
+    public func fetchTagsWithCounts(showHidden: Bool = false) async throws -> [(Tag, Int)] {
         try await read { db in
             let tags = try Tag.order(Column("name")).fetchAll(db)
             return try tags.map { tag in
-                let count = try AssetTag.filter(Column("tag_id") == tag.id).fetchCount(db)
+                var links = AssetTag.filter(Column("tag_id") == tag.id)
+                if !showHidden {
+                    links = links.filter(SQL("asset_id IN (SELECT id FROM assets WHERE is_hidden = 0)"))
+                }
+                let count = try links.fetchCount(db)
                 return (tag, count)
             }
         }

@@ -97,7 +97,7 @@ final class LibraryViewModel {
     func loadSidebarData() async {
         async let projsResult = (try? database.fetchProjects()) ?? []
         async let clientsResult = (try? database.fetchClients()) ?? []
-        async let tagsResult = (try? database.fetchTagsWithCounts()) ?? []
+        async let tagsResult = (try? database.fetchTagsWithCounts(showHidden: showHidden)) ?? []
         async let variantsResult = (try? database.fetchVariantFamilies()) ?? []
         async let familyNamesResult = (try? database.fetchAllVariantFamilyNames()) ?? []
 

@@ -192,6 +192,26 @@ struct SidebarTests {
         #expect(counts.clients[c2] == 2)
     }
 
+    /// Worked by hand: a1 visible and a2 hidden both carry T; only a2 carries H.
+    /// Hidden left out: T 1, H 0, as the T grid shows one. Show Hidden: T 2, H 1.
+    @Test func sidebarTagCountsLeaveHiddenAssetsOutAsTheGridDoes() async throws {
+        let db = try makeDB()
+        try await addAsset(db, "a1")
+        try await addAsset(db, "a2", hidden: true)
+        let t = try await tag(db, "T", on: ["a1", "a2"])
+        let h = try await tag(db, "H", on: ["a2"])
+        func counts(_ rows: [(ImageAssetManagerCore.Tag, Int)]) -> [String: Int] {
+            Dictionary(uniqueKeysWithValues: rows.map { ($0.0.id, $0.1) })
+        }
+        let visible = counts(try await db.fetchTagsWithCounts())
+        #expect(visible[t] == 1 && visible[h] == 0)
+        #expect(visible[t] == (try await db.searchAssets(tagID: t).count))
+        // The pair: with Show Hidden every link counts.
+        let all = counts(try await db.fetchTagsWithCounts(showHidden: true))
+        #expect(all[t] == 2 && all[h] == 1)
+        #expect(all[t] == (try await db.searchAssets(tagID: t, showHidden: true).count))
+    }
+
     @Test func groupsAreByClientThenProjectIgnoringCaseWithTheClientlessGroupLast() {
         let tfwm = Client(id: "c-t", name: "TfWM", createdAt: "x")
         let ionic = Client(id: "c-i", name: "ionic", createdAt: "x")
