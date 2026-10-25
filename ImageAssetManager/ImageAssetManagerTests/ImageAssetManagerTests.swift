@@ -28,4 +28,55 @@ struct ImageAssetManagerTests {
         let declared = Bundle.main.object(forInfoDictionaryKey: "ITSAppUsesNonExemptEncryption")
         #expect(declared as? Bool == false, "ITSAppUsesNonExemptEncryption is \(String(describing: declared))")
     }
+
+    /// R2-2 P2. Worked by hand: one visible asset, so All is 1; hidden, 0; unhidden, 1 again;
+    /// hidden from the inspector, 0. Each step's count must agree with the grid without a reload.
+    @Test func hidingAndUnhidingRefreshTheSidebarCountsAsWellAsTheGrid() async throws {
+        let library = FileManager.default.temporaryDirectory.appending(path: "IAM-HideTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: library.appending(path: "assets"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: library) }
+        let db = try AppDatabase(path: ":memory:")
+        try await db.insertAsset(Asset(
+            id: "a1", filename: "a1.png", fileHash: "h1", providerID: "nano_banana", modelID: "m",
+            createdAt: "2026-10-01T09:00:00Z"))
+        let model = LibraryViewModel(database: db, libraryURL: library)
+        await model.loadSidebarData()
+        await model.loadAssets()
+        #expect(model.counts.all == 1 && model.assets.map(\.id) == ["a1"])
+
+        try await model.setHidden(["a1"], hidden: true)
+        #expect(model.counts.all == 0)
+        #expect(model.assets.isEmpty)
+        // The unhide path returned before any reload.
+        try await model.setHidden(["a1"], hidden: false)
+        #expect(model.counts.all == 1)
+        #expect(model.assets.map(\.id) == ["a1"])
+        try await model.toggleHidden(assetID: "a1")
+        #expect(model.counts.all == 0)
+    }
+
+    /// Changing an asset's projects from the inspector moves it out of Unfiled and into the project's
+    /// count at once. Worked by hand: one unfiled asset, so Unfiled 1 and the project 0; filed, 0 and 1;
+    /// detached again, 1 and 0.
+    @Test func changingAnAssetsProjectsFromTheInspectorRefreshesTheSidebarCounts() async throws {
+        let library = FileManager.default.temporaryDirectory.appending(path: "IAM-ProjectsTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: library.appending(path: "assets"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: library) }
+        let db = try AppDatabase(path: ":memory:")
+        try await db.insertAsset(Asset(
+            id: "a1", filename: "a1.png", fileHash: "h1", providerID: "nano_banana", modelID: "m",
+            createdAt: "2026-10-01T09:00:00Z"))
+        let project = try await db.createProject(name: "Labs", clientID: nil, description: nil).project
+        let model = LibraryViewModel(database: db, libraryURL: library)
+        await model.loadSidebarData()
+        #expect(model.counts.unfiled == 1 && (model.counts.projects[project.id] ?? 0) == 0)
+
+        try await model.setAssetProjects(assetID: "a1", projectIDs: [project.id])
+        #expect(model.counts.unfiled == 0)
+        #expect(model.counts.projects[project.id] == 1)
+
+        // The pair: detaching puts it back in Unfiled.
+        try await model.setAssetProjects(assetID: "a1", projectIDs: [])
+        #expect(model.counts.unfiled == 1 && (model.counts.projects[project.id] ?? 0) == 0)
+    }
 }

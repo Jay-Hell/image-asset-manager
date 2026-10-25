@@ -5,9 +5,11 @@ import Foundation
 extension AppDatabase {
     /// Filter assets by any combination of projects (union), tag, variant family, and
     /// full-text search. `projectIDs == nil` means "no project filter"; an empty array
-    /// filters to assets with zero project memberships.
+    /// filters to assets with zero project memberships. `clientID` keeps assets in any of that
+    /// client's projects (the join `fetchSidebarCounts` counts), so a client with none shows none.
     public func searchAssets(
         projectIDs: [String]? = nil,
+        clientID: String? = nil,
         tagID: String? = nil,
         variantFamilyID: String? = nil,
         searchText: String? = nil,
@@ -25,6 +27,12 @@ extension AppDatabase {
                     request = request.filter(SQL("id IN (SELECT asset_id FROM asset_projects WHERE project_id IN \(pids))"))
                 }
             }
+            if let cid = clientID {
+                request = request.filter(SQL("""
+                    id IN (SELECT ap.asset_id FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
+                           WHERE p.client_id = \(cid))
+                    """))
+            }
             if let tid = tagID {
                 request = request.filter(SQL("id IN (SELECT asset_id FROM asset_tags WHERE tag_id = \(tid))"))
             }
@@ -39,11 +47,17 @@ extension AppDatabase {
         }
     }
 
-    public func fetchTagsWithCounts() async throws -> [(Tag, Int)] {
+    /// Each tag and its asset count for the sidebar. Hidden assets are left out unless
+    /// `showHidden`, as the grid (`searchAssets`) and `fetchSidebarCounts` do.
+    public func fetchTagsWithCounts(showHidden: Bool = false) async throws -> [(Tag, Int)] {
         try await read { db in
             let tags = try Tag.order(Column("name")).fetchAll(db)
             return try tags.map { tag in
-                let count = try AssetTag.filter(Column("tag_id") == tag.id).fetchCount(db)
+                var links = AssetTag.filter(Column("tag_id") == tag.id)
+                if !showHidden {
+                    links = links.filter(SQL("asset_id IN (SELECT id FROM assets WHERE is_hidden = 0)"))
+                }
+                let count = try links.fetchCount(db)
                 return (tag, count)
             }
         }

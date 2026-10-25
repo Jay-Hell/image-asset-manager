@@ -21,6 +21,10 @@ public final class MCPTokenPublisher: @unchecked Sendable {
         write: @escaping @Sendable (String) throws -> Void
     ) {
         guard !TestHostIsolation.isTestHost(environment: environment) else { return nil }
+        #if DEBUG
+        // Nor does a debug build on an override library: the token file is the live app's.
+        guard DebugLibrary.current.library == nil else { return nil }
+        #endif
         self.token = token
         self.write = write
     }

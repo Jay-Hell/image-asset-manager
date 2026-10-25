@@ -5,8 +5,19 @@ enum SourceSelection: Hashable {
     case allAssets
     case client(String)
     case project(String)
+    /// Assets with no project.
+    case unfiled
     case tag(String)
     case variantFamily(String)
+}
+
+/// A refusal the sidebar shows in its own sheet.
+enum LibraryActionError: LocalizedError {
+    case message(String)
+    var errorDescription: String? {
+        if case .message(let text) = self { return text }
+        return nil
+    }
 }
 
 struct AssetDetail {
@@ -26,6 +37,11 @@ final class LibraryViewModel {
     var projects: [Project] = []
     var clients: [Client] = []
     var tagsWithCounts: [(Tag, Int)] = []
+    var counts = SidebarCounts()
+    /// Clients with their projects, then projects with no client.
+    var sidebarGroups: [SidebarGroup] {
+        SidebarGrouping.groups(clients: clients, projects: projects)
+    }
     var variantFamilies: [(Variant, [(VariantMember, Asset)])] = []
     /// Distinct family names across all projects (including singletons). Used by the
     /// inspector's family picker so the user can move an asset into any existing family.
@@ -81,11 +97,14 @@ final class LibraryViewModel {
     func loadSidebarData() async {
         async let projsResult = (try? database.fetchProjects()) ?? []
         async let clientsResult = (try? database.fetchClients()) ?? []
-        async let tagsResult = (try? database.fetchTagsWithCounts()) ?? []
+        async let tagsResult = (try? database.fetchTagsWithCounts(showHidden: showHidden)) ?? []
         async let variantsResult = (try? database.fetchVariantFamilies()) ?? []
         async let familyNamesResult = (try? database.fetchAllVariantFamilyNames()) ?? []
 
+        async let countsResult = (try? database.fetchSidebarCounts(showHidden: showHidden)) ?? SidebarCounts()
+
         let (projs, cls, tags, variants, familyNames) = await (projsResult, clientsResult, tagsResult, variantsResult, familyNamesResult)
+        counts = await countsResult
         projects = projs
         clients = cls
         tagsWithCounts = tags.filter { $0.1 > 0 }
@@ -108,13 +127,17 @@ final class LibraryViewModel {
                 displayedVariantFamilies = try await database.fetchVariantFamilies()
 
             case .client(let cid):
-                let clientProjectIDs = projects.filter { $0.clientID == cid }.map(\.id)
-                assets = try await database.searchAssets(projectIDs: clientProjectIDs, searchText: searchArg, showHidden: capturedShowHidden)
+                // By client in the query, never as a project list: an empty list means Unfiled.
+                assets = try await database.searchAssets(clientID: cid, searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = []
 
             case .project(let pid):
                 assets = try await database.searchAssets(projectIDs: [pid], searchText: searchArg, showHidden: capturedShowHidden)
                 displayedVariantFamilies = try await database.fetchVariantFamilies(projectID: pid)
+
+            case .unfiled:
+                assets = try await database.searchAssets(projectIDs: [], searchText: searchArg, showHidden: capturedShowHidden)
+                displayedVariantFamilies = []
 
             case .tag(let tid):
                 assets = try await database.searchAssets(tagID: tid, searchText: searchArg, showHidden: capturedShowHidden)
@@ -127,6 +150,16 @@ final class LibraryViewModel {
             variantMemberIDs = (try? await database.fetchVariantMemberAssetIDs()) ?? []
         } catch {
             assets = []
+        }
+    }
+
+    /// Drops cached thumbnails no asset needs, at most once a day (`ThumbnailCache.sweepIfDue`),
+    /// on a detached task. A failed read sweeps nothing rather than everything.
+    func sweepThumbnailsIfDue() {
+        let database = self.database
+        Task.detached(priority: .utility) {
+            guard let all = try? await database.searchAssets(showHidden: true) else { return }
+            await ThumbnailCache.shared.sweepIfDue(liveAssets: all.map { (id: $0.id, fileHash: $0.fileHash) })
         }
     }
 
@@ -265,17 +298,20 @@ final class LibraryViewModel {
 
     func setHidden(_ ids: Set<String>, hidden: Bool) async throws {
         try await database.setHidden(assetIDs: Array(ids), hidden: hidden)
-        if !hidden { return }
-        // After hiding, deselect and exit select mode if all selected items are now hidden
-        selectedAssetIDs.subtract(ids)
-        if selectedAssetIDs.isEmpty { isSelectMode = false }
-        if let selected = selectedAssetID, ids.contains(selected) {
-            selectedAssetID = nil
-            inspectorDetail = nil
+        if hidden {
+            // After hiding, deselect and exit select mode if all selected items are now hidden
+            selectedAssetIDs.subtract(ids)
+            if selectedAssetIDs.isEmpty { isSelectMode = false }
+            if let selected = selectedAssetID, ids.contains(selected) {
+                selectedAssetID = nil
+                inspectorDetail = nil
+            }
         }
+        // Hiding and unhiding both change the counts, which leave hidden assets out.
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
         await loadAssets()
     }
 
@@ -356,6 +392,7 @@ final class LibraryViewModel {
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        await loadSidebarData()
         await loadAssets()
         if selectedAssetID == assetID {
             await selectAsset(assetID)
@@ -395,6 +432,8 @@ final class LibraryViewModel {
         let indexURL = libraryURL.appending(path: "index.json")
         let assetsDir = libraryURL.appending(path: "assets")
         try await IndexExporter.export(from: database, to: indexURL, assetsBaseURL: assetsDir)
+        // Filing changes the Unfiled and project counts as well as the grid.
+        await loadSidebarData()
         await loadAssets()
         if selectedAssetID == assetID {
             await selectAsset(assetID)
@@ -452,5 +491,64 @@ final class LibraryViewModel {
             await selectAsset(assetID)
         }
         await loadSidebarData()
+    }
+
+    // MARK: - Filing and creating (release 1.2)
+
+    /// File assets to a project through Core's `fileAssets` (the MCP's `file_assets`): `add` keeps
+    /// their other projects, `move` replaces them, and a family follows its members.
+    func file(_ ids: Set<String>, to projectID: String, mode: FilingMode) async throws {
+        _ = try await database.fileAssets(assetIDs: Array(ids), projectID: projectID, mode: mode, primary: false)
+        await refreshAfterWrite(touching: ids)
+    }
+
+    /// Make a client, refusing a name another client has in any case (the Settings rule and text).
+    func createClient(name: String) async throws -> Client {
+        let (client, created) = try await database.createClient(name: name)
+        guard created else { throw LibraryActionError.message(NameClash.client(client.name)) }
+        await loadSidebarData()
+        return client
+    }
+
+    /// Make a project, with the same rule and text as Settings.
+    func createProject(name: String, clientID: String?) async throws -> Project {
+        let (project, created) = try await database.createProject(name: name, clientID: clientID, description: nil)
+        guard created else { throw LibraryActionError.message(NameClash.project(project.name)) }
+        await loadSidebarData()
+        return project
+    }
+
+    // MARK: - Tag manager
+
+    func loadTagRows() async -> [TagRow] {
+        (try? await database.fetchTagRows()) ?? []
+    }
+
+    func renameTag(id: String, to name: String) async throws {
+        try await database.renameTag(id: id, newName: name)
+        await refreshAfterWrite(touching: [])
+    }
+
+    func mergeTags(ids: [String], into targetID: String) async throws {
+        try await database.mergeTags(ids: ids, into: targetID)
+        await refreshAfterWrite(touching: [])
+    }
+
+    func deleteTag(id: String) async throws {
+        try await database.deleteTag(id: id)
+        // A tag that no longer exists cannot stay the source.
+        if case .tag(let current) = sourceSelection, current == id { sourceSelection = .allAssets }
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// index.json, then the sidebar (counts and all), the grid, and the inspector if it shows one of `ids`.
+    private func refreshAfterWrite(touching ids: Set<String>) async {
+        let assetsDir = libraryURL.appending(path: "assets")
+        try? await IndexExporter.export(from: database, to: libraryURL.appending(path: "index.json"), assetsBaseURL: assetsDir)
+        await loadSidebarData()
+        await loadAssets()
+        if let sid = selectedAssetID, ids.isEmpty || ids.contains(sid) {
+            await selectAsset(sid)
+        }
     }
 }

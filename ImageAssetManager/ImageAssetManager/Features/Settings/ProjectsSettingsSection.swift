@@ -129,7 +129,7 @@ struct ProjectsSettingsSection: View {
                 let (existing, created) = try await env.database.createProject(
                     name: trimmed, clientID: clientID, description: nil)
                 guard created else {
-                    errorMessage = "A project named \u{201C}\(existing.name)\u{201D} already exists."
+                    errorMessage = NameClash.project(existing.name)
                     return
                 }
                 newProjectName = ""

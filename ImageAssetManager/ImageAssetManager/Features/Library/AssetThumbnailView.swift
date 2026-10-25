@@ -21,7 +21,7 @@ struct AssetThumbnailView: View {
             Color.imageMatte
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    LocalImage(url: fileURL)
+                    ThumbnailImage(asset: asset, fileURL: fileURL)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 

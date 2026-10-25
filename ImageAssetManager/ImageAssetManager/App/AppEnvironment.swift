@@ -23,7 +23,11 @@ final class AppEnvironment {
     static func make() throws -> AppEnvironment {
         // A test host never resolves the bookmark, UserDefaults or iCloud: it gets a fresh,
         // empty library under the temporary directory, so app tests cannot reach John's.
+        #if DEBUG
+        let url = isTestHost ? try TestHostIsolation.makeTemporaryLibrary() : try debugLibraryURL() ?? resolveLibraryURL()
+        #else
         let url = isTestHost ? try TestHostIsolation.makeTemporaryLibrary() : resolveLibraryURL()
+        #endif
         let db = try LibraryOpener.open(at: url)
         openedLibraryURL = url
         return AppEnvironment(database: db, libraryURL: url)
@@ -32,6 +36,9 @@ final class AppEnvironment {
     // MARK: - Library location change
 
     func changeLibraryLocation(to destinationURL: URL, mode: MigrationMode) async throws {
+        #if DEBUG
+        if Self.isDebugLibrary { throw DebugLibrary.Refusal.locationChangeRefused }
+        #endif
         // Flush WAL into the main .db file so the copy/move is self-consistent.
         try await database.checkpoint()
 
@@ -73,6 +80,10 @@ final class AppEnvironment {
     // MARK: - Bookmark helpers
 
     static func persistBookmark(for url: URL) {
+        #if DEBUG
+        // A debug library never becomes the saved location.
+        if isDebugLibrary { return }
+        #endif
         #if os(macOS)
         if let data = try? url.bookmarkData(
             options: .withSecurityScope,
@@ -123,4 +134,61 @@ final class AppEnvironment {
         try? fm.createDirectory(at: appSupport, withIntermediateDirectories: true)
         return appSupport
     }
+
+    #if DEBUG
+    // MARK: - Debug library override (DEBUG only; see DebugLibrary in Core)
+
+    /// True when this process opened an `IAM_LIBRARY` copy: no MCP server, no saved location.
+    static var isDebugLibrary: Bool { DebugLibrary.current.library != nil }
+
+    /// The `IAM_LIBRARY` folder, checked against every live location, or nil when none is asked
+    /// for. A refusal throws, so the window says why and the live library is never opened instead.
+    private static func debugLibraryURL() throws -> URL? {
+        let info = ProcessInfo.processInfo
+        guard let requested = try DebugLibrary.requested(environment: info.environment, arguments: info.arguments) else {
+            return nil
+        }
+        let library = try DebugLibrary.resolve(requested, protected: liveLocations())
+        DebugLibrary.current.activate(library)
+        return library
+    }
+
+    /// Everywhere the live library is or could be, read without writing anything: a stale
+    /// bookmark is not removed and no folder is created.
+    private static func liveLocations() -> [DebugLibrary.Protected] {
+        let saved = "the saved library location"
+        var places: [DebugLibrary.Protected] = []
+        let defaults = UserDefaults.standard
+        #if os(macOS)
+        if let data = defaults.data(forKey: bookmarkKey) {
+            var stale = false
+            if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                                  relativeTo: nil, bookmarkDataIsStale: &stale) {
+                places.append(.location(what: saved, url: url))
+            } else {
+                places.append(.unreadable(what: saved))
+            }
+        }
+        #endif
+        if let text = defaults.string(forKey: bookmarkKey + "_url") {
+            if let url = URL(string: text), url.isFileURL {
+                places.append(.location(what: saved, url: url))
+            } else {
+                places.append(.unreadable(what: saved))
+            }
+        }
+        let fm = FileManager.default
+        if let container = fm.url(forUbiquityContainerIdentifier: DebugLibrary.iCloudContainerID) {
+            places.append(.location(what: "the live iCloud library", url: container))
+        }
+        // From the real home folder too, in case iCloud is signed out (a sandboxed home is the container).
+        if let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir {
+            let url = URL(fileURLWithPath: String(cString: home), isDirectory: true)
+            places.append(.location(what: "the live iCloud library", url: DebugLibrary.iCloudContainer(home: url)))
+        }
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "ImageAssetManager")
+        places.append(.location(what: "the fallback library and mcp-token folder", url: appSupport))
+        return places
+    }
+    #endif
 }

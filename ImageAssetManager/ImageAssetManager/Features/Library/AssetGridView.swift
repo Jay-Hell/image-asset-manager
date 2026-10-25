@@ -10,6 +10,8 @@ struct AssetGridView: View {
     @State private var showClearTagsConfirmation: Bool = false
     @State private var showNewTagSheet: Bool = false
     @State private var newTagName: String = ""
+    /// A filing that failed, shown in an alert rather than looking like nothing happened.
+    @State private var filingError: String?
 
     private let minTileWidth: CGFloat = 160
     private let spacing: CGFloat = 4
@@ -112,6 +114,14 @@ struct AssetGridView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.isSelectMode)
+        .alert("Filing Failed", isPresented: .init(
+            get: { filingError != nil },
+            set: { if !$0 { filingError = nil } }
+        )) {
+            Button("OK") { filingError = nil }
+        } message: {
+            Text(filingError ?? "")
+        }
         .confirmationDialog(
             "Delete \(viewModel.selectedAssetIDs.count) asset\(viewModel.selectedAssetIDs.count == 1 ? "" : "s")?",
             isPresented: $showDeleteConfirmation,
@@ -217,6 +227,14 @@ struct AssetGridView: View {
                         .padding(.leading, 56) // offset past provider chip
                 }
             }
+            .contextMenu {
+                if !viewModel.projects.isEmpty {
+                    // In select mode, a ticked asset's menu acts on the whole selection.
+                    let ids: Set<String> = viewModel.isSelectMode && viewModel.selectedAssetIDs.contains(asset.id)
+                        ? viewModel.selectedAssetIDs : [asset.id]
+                    filingMenus(for: ids)
+                }
+            }
             .onTapGesture {
                 if viewModel.isSelectMode {
                     if viewModel.selectedAssetIDs.contains(asset.id) {
@@ -256,21 +274,35 @@ struct AssetGridView: View {
 
     // MARK: - Select mode action bar
 
+    /// "Add to project…" keeps each asset's other projects; "Move to project…" replaces them.
+    /// Both go through Core's `fileAssets`, so a variant family follows its members.
+    @ViewBuilder
+    private func filingMenus(for ids: Set<String>) -> some View {
+        ForEach(FilingMode.allCases, id: \.self) { mode in
+            Menu(mode == .add ? "Add to project…" : "Move to project…") {
+                ForEach(viewModel.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, id: \.id) { project in
+                    Button(project.name) {
+                        Task {
+                            do {
+                                try await viewModel.file(ids, to: project.id, mode: mode)
+                            } catch {
+                                filingError = error.localizedDescription
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Bulk project assignment menu: add a single project to every checked asset, or
     /// wipe every project membership from them. Disabled when no assets are selected.
     private var projectsMenu: some View {
         Menu {
             if viewModel.projects.isEmpty {
-                Text("No projects — add one in Settings")
+                Text("No projects — use New project… in the sidebar")
             } else {
-                Menu("Add to…") {
-                    ForEach(viewModel.projects, id: \.id) { project in
-                        Button(project.name) {
-                            let ids = viewModel.selectedAssetIDs
-                            Task { try? await viewModel.bulkAddProject(ids: ids, projectID: project.id) }
-                        }
-                    }
-                }
+                filingMenus(for: viewModel.selectedAssetIDs)
                 Divider()
                 Button("Clear All Projects", role: .destructive) {
                     showClearProjectsConfirmation = true

@@ -61,6 +61,7 @@ struct LibraryBrowserView: View {
         .task {
             await viewModel.loadSidebarData()
             await viewModel.loadAssets()
+            viewModel.sweepThumbnailsIfDue()
         }
     }
 }

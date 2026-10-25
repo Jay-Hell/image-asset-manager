@@ -39,7 +39,7 @@ struct VariantFilmstripRow: View {
         let isSelected = selectedAssetID == asset.id
 
         return ZStack(alignment: .bottomLeading) {
-            LocalImage(url: fileURL)
+            ThumbnailImage(asset: asset, fileURL: fileURL)
                 .frame(width: 80, height: 80)
                 .clipped()
                 .background(Color.imageMatte)

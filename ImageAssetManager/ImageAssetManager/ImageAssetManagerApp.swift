@@ -37,6 +37,9 @@ struct ImageAssetManagerApp: App {
             } else if let env {
                 ContentView()
                     .environment(env)
+                    #if DEBUG
+                    .modifier(DebugLibraryTitle())
+                    #endif
                     // Check the model catalogue now and every 24 hours while the app runs.
                     .task { CatalogueStore.shared.start() }
                     // OpenRouter's public model list: at launch and every 24 hours.
@@ -52,7 +55,7 @@ struct ImageAssetManagerApp: App {
         }
         #if os(macOS)
         .defaultSize(width: 1200, height: 800)
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .windowToolbarStyle(.unified(showsTitle: Self.showsWindowTitle))
         #endif
 
         #if os(macOS)
@@ -68,16 +71,42 @@ struct ImageAssetManagerApp: App {
         #endif
     }
 
+    /// The title is hidden, except to say a debug build is on an `IAM_LIBRARY` copy.
+    private static var showsWindowTitle: Bool {
+        #if DEBUG
+        return AppEnvironment.isDebugLibrary
+        #else
+        return false
+        #endif
+    }
+
     #if os(macOS)
     /// Runs in every window's `.task`; only the first starts a server (`MCPServerOwner`, Core).
     @MainActor
     private func startMCPServer(_ env: AppEnvironment) async {
+        #if DEBUG
+        // The port and the mcp-token file belong to the live app.
+        if AppEnvironment.isDebugLibrary { return }
+        #endif
         await ImageAssetManagerDelegate.mcpServers.startOnce(
             make: { MCPServer(database: env.database, libraryURL: env.libraryURL) },
             start: { await $0.start() })
     }
     #endif
 }
+
+#if DEBUG
+/// "DEBUG LIBRARY: <path>" as the window title while an `IAM_LIBRARY` copy is open.
+private struct DebugLibraryTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        if let library = DebugLibrary.current.library {
+            content.navigationTitle(DebugLibrary.windowTitle(for: library))
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 /// Shown instead of the library when it could not be opened. Nothing has been changed on disk.
 private struct LibraryUnavailableView: View {

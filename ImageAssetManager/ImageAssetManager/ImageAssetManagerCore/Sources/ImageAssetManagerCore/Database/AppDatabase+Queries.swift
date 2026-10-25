@@ -10,9 +10,23 @@ public enum ClientError: Error, Equatable {
 public enum ProjectError: Error, Equatable, LocalizedError {
     /// Another project has this name, ignoring case and surrounding spaces (as `create_project`).
     case nameInUse
+    /// A name that matches two projects differing only in case, and neither exactly.
+    case ambiguousName(requested: String, matches: [(name: String, id: String)])
+
+    public static func == (lhs: ProjectError, rhs: ProjectError) -> Bool {
+        switch (lhs, rhs) {
+        case (.nameInUse, .nameInUse): return true
+        case (.ambiguousName(let a, let am), .ambiguousName(let b, let bm)):
+            return a == b && am.map(\.id) == bm.map(\.id)
+        default: return false
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
+        case .ambiguousName(let requested, let matches):
+            let both = matches.map { "'\($0.name)' (\($0.id))" }.joined(separator: " and ")
+            return "project '\(requested)' matches \(both), which differ only in case. Use the exact name or the ID."
         case .nameInUse: return "Another project already has that name (names are compared ignoring case)."
         }
     }
@@ -30,9 +44,7 @@ extension AppDatabase {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { throw ClientError.nameInUse }
         return try await write { db in
-            if let existing = try Client
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
-                .fetchOne(db) {
+            if let existing = try Self.clientNamed(trimmed, db) {
                 return existing
             }
             let client = Client(name: trimmed, createdAt: iso8601Now())
@@ -50,17 +62,14 @@ extension AppDatabase {
             guard let current = try Client.fetchOne(db, key: id) else {
                 throw ClientError.notFound
             }
-            if current.name.caseInsensitiveCompare(trimmed) == .orderedSame {
+            if NameMatch.same(current.name, trimmed) {
                 if current.name != trimmed {
                     try db.execute(sql: "UPDATE clients SET name = ? WHERE id = ?", arguments: [trimmed, id])
                 }
                 return
             }
-            let collision = try Client
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
-                .filter(Column("id") != id)
-                .fetchCount(db)
-            if collision > 0 { throw ClientError.nameInUse }
+            let collision = try Client.filter(Column("id") != id).fetchAll(db).contains { NameMatch.same($0.name, trimmed) }
+            if collision { throw ClientError.nameInUse }
             try db.execute(sql: "UPDATE clients SET name = ? WHERE id = ?", arguments: [trimmed, id])
         }
     }
@@ -92,11 +101,8 @@ extension AppDatabase {
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         try await write { db in
-            let collision = try Project
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
-                .filter(Column("id") != id)
-                .fetchCount(db)
-            if collision > 0 { throw ProjectError.nameInUse }
+            let collision = try Project.filter(Column("id") != id).fetchAll(db).contains { NameMatch.same($0.name, trimmed) }
+            if collision { throw ProjectError.nameInUse }
             try db.execute(sql: "UPDATE projects SET name = ? WHERE id = ?", arguments: [trimmed, id])
         }
     }
@@ -597,9 +603,9 @@ extension AppDatabase {
         let about = description?.trimmingCharacters(in: .whitespacesAndNewlines)
         return try await write { db in
             if let existing = try Project
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
                 .order(Column("created_at"), Column("id"))
-                .fetchOne(db) {
+                .fetchAll(db)
+                .first(where: { NameMatch.same($0.name, trimmed) }) {
                 return (existing, false)
             }
             let project = Project(
@@ -690,6 +696,7 @@ extension AppDatabase {
                     arguments: [assetID, first])
             }
             try Self.mirrorPrimaryProject(assetID: assetID, db)
+            try Self.fileVariantFamily(ofAsset: assetID, db)
         }
     }
 
@@ -729,9 +736,9 @@ extension AppDatabase {
 
     static func clientNamed(_ name: String, _ db: Database) throws -> Client? {
         try Client
-            .filter(SQL("LOWER(name) = LOWER(\(name))"))
             .order(Column("created_at"), Column("id"))
-            .fetchOne(db)
+            .fetchAll(db)
+            .first(where: { NameMatch.same($0.name, name) })
     }
 }
 
