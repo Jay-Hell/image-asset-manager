@@ -61,6 +61,19 @@ test('the generation tools have timeouts that outlast a database read', () => {
   assert.ok(TOOL_TIMEOUTS_MS.list_generation_options > 8_000);
 });
 
+test('offline, list_projects counts assets per project from index.json, and list_tags counts tags', () => {
+  const dir = libraryWith([
+    { id: 'a', filename: 'a.png', createdAt: '2026-09-24T10:00:00Z', projectIDs: ['p1', 'p2'], projectNames: ['ELEMENTS', 'Labs'], tags: ['film', 'hero'] },
+    { id: 'b', filename: 'b.png', createdAt: '2026-10-23T10:00:00Z', projectIDs: ['p2'], projectNames: ['Labs'], tags: ['hero'] },
+    { id: 'c', filename: 'c.png', createdAt: '2026-10-24T10:00:00Z', tags: [] },
+  ]);
+  assert.deepEqual(callFallbackTool('list_projects', {}, dir), [
+    { id: 'p1', name: 'ELEMENTS', asset_count: 1, last_used_at: '2026-09-24T10:00:00Z' },
+    { id: 'p2', name: 'Labs', asset_count: 2, last_used_at: '2026-10-23T10:00:00Z' },
+  ]);
+  assert.deepEqual(callFallbackTool('list_tags', {}, dir).tags, [{ name: 'hero', count: 2 }, { name: 'film', count: 1 }]);
+});
+
 test('a stored media_type is never overridden by the extension', () => {
   const dir = libraryWith([{ id: 'x', filename: 'x.png', media_type: 'image/webp', createdAt: '2026-10-22T00:00:00Z' }]);
   assert.equal(callFallbackTool('get_asset', { id: 'x' }, dir).media_type, 'image/webp');
