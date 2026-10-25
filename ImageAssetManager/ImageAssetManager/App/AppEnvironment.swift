@@ -6,6 +6,11 @@ final class AppEnvironment {
     var database: AppDatabase
     var libraryURL: URL
     private(set) var libraryRevision: Int = 0
+    /// Bumped by an edit made outside the library window (Settings' clients and projects), so the
+    /// window reloads its sidebar and grid. Unlike `libraryRevision` it does not rebuild the view models.
+    private(set) var libraryEditRevision: Int = 0
+
+    func libraryEdited() { libraryEditRevision += 1 }
 
     private static let bookmarkKey = "libraryLocationBookmark"
 

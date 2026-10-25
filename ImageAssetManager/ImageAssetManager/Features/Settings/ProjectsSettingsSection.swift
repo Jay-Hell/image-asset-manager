@@ -43,7 +43,7 @@ struct ProjectsSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(Color.appTextSecondary)
         }
-        .task { await reload() }
+        .task(id: env.libraryEditRevision) { await reload(edited: false) }
         .alert("Project Error", isPresented: .init(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -111,12 +111,14 @@ struct ProjectsSettingsSection: View {
         .font(.caption)
     }
 
-    private func reload() async {
+    /// `edited`: this follows a change, so the main window's sidebar and grid reload too.
+    private func reload(edited: Bool = true) async {
         async let ps = (try? env.database.fetchProjects()) ?? []
         async let cs = (try? env.database.fetchClients()) ?? []
         let (projs, cls) = await (ps, cs)
         projects = projs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         clients = cls
+        if edited { env.libraryEdited() }
     }
 
     private func addProject() {
@@ -146,7 +148,7 @@ struct ProjectsSettingsSection: View {
         guard !trimmed.isEmpty else { editingID = nil; return }
         Task {
             do {
-                try await env.database.renameProject(id: project.id, newName: trimmed)
+                try await env.database.renameProjectReportingClash(id: project.id, newName: trimmed)
                 editingID = nil
                 await reload()
             } catch {

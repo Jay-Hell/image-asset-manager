@@ -79,6 +79,9 @@ struct ContentView: View {
                             libraryURL: env.libraryURL
                         )
                     }
+                    .onChange(of: env.libraryEditRevision) { _, _ in
+                        Task { await libraryVM.reloadAfterExternalEdit() }
+                    }
                     .onChange(of: showGenerationSheet) { _, isShowing in
                         guard !isShowing else { return }
                         Task {

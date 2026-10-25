@@ -38,7 +38,7 @@ struct ClientsSettingsSection: View {
                 .font(.caption)
                 .foregroundStyle(Color.appTextSecondary)
         }
-        .task { await reload() }
+        .task(id: env.libraryEditRevision) { await reload(edited: false) }
         .alert("Client Error", isPresented: .init(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -82,8 +82,10 @@ struct ClientsSettingsSection: View {
         }
     }
 
-    private func reload() async {
+    /// `edited`: this follows a change, so the main window's sidebar and grid reload too.
+    private func reload(edited: Bool = true) async {
         clients = (try? await env.database.fetchClients()) ?? []
+        if edited { env.libraryEdited() }
     }
 
     private func addClient() {
@@ -110,11 +112,10 @@ struct ClientsSettingsSection: View {
         guard !trimmed.isEmpty else { editingID = nil; return }
         Task {
             do {
-                try await env.database.renameClient(id: client.id, newName: trimmed)
+                // The same clash rule and text as creating one (and as the sidebar's rename).
+                try await env.database.renameClientReportingClash(id: client.id, newName: trimmed)
                 editingID = nil
                 await reload()
-            } catch ClientError.nameInUse {
-                errorMessage = "Another client already has that name."
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -126,8 +127,6 @@ struct ClientsSettingsSection: View {
             do {
                 try await env.database.deleteClient(id: client.id)
                 await reload()
-            } catch ClientError.hasAssignedProjects {
-                errorMessage = "Cannot delete \"\(client.name)\" — it still has projects assigned. Reassign or delete those projects first."
             } catch {
                 errorMessage = error.localizedDescription
             }

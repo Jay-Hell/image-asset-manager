@@ -189,6 +189,13 @@ struct ManageTests {
         await #expect(throws: ProjectError.nameInUse) { try await db.renameProject(id: p2, newName: "ÉCRAN LABS") }
         #expect(try await db.fetchClients().map(\.name).sorted() == ["Beta", "Écran"])
         #expect(try await db.fetchProjects().map(\.name).sorted() == ["Other", "Écran labs"])
+        // The text is the one creating gives, naming the holder of the name as it is stored.
+        await #expect(throws: NameClashError(message: NameClash.client("Écran"))) {
+            try await db.renameClientReportingClash(id: b.id, newName: "ÉCRAN")
+        }
+        await #expect(throws: NameClashError(message: NameClash.project("Écran labs"))) {
+            try await db.renameProjectReportingClash(id: p2, newName: "écran LABS")
+        }
         // The pair: a free name and the project's own name in another case are accepted.
         try await db.renameClient(id: b.id, newName: "Gamma")
         try await db.renameProject(id: p1, newName: "ÉCRAN LABS")

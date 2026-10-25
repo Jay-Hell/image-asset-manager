@@ -65,7 +65,12 @@ final class LibraryViewModel {
 
     // MARK: - Multi-select
     var isSelectMode: Bool = false
-    var selectedAssetIDs: Set<String> = []
+    /// The ticked (iPad Select mode) or Mac-selected images, with the ⇧-click anchor (`GridSelection`).
+    var selection = GridSelection()
+    var selectedAssetIDs: Set<String> {
+        get { selection.selected }
+        set { selection = GridSelection(selected: newValue, anchor: selection.anchor) }
+    }
 
     // MARK: - Import
     var showImportSheet: Bool = false
@@ -110,6 +115,20 @@ final class LibraryViewModel {
         tagsWithCounts = tags.filter { $0.1 > 0 }
         variantFamilies = variants
         allVariantFamilyNames = familyNames
+        // A client or project that no longer exists cannot stay the source (deleted here or in Settings).
+        let gone: Bool
+        switch sourceSelection {
+        case .client(let id): gone = !cls.contains { $0.id == id }
+        case .project(let id): gone = !projs.contains { $0.id == id }
+        default: gone = false
+        }
+        if gone {
+            sourceSelection = .allAssets
+            selectedAssetID = nil
+            inspectorDetail = nil
+            isSelectMode = false
+            selection.clear()
+        }
     }
 
     func loadAssets() async {
@@ -197,7 +216,7 @@ final class LibraryViewModel {
         selectedAssetID = nil
         inspectorDetail = nil
         isSelectMode = false
-        selectedAssetIDs = []
+        selection.clear()
         await loadAssets()
     }
 
@@ -516,6 +535,83 @@ final class LibraryViewModel {
         guard created else { throw LibraryActionError.message(NameClash.project(project.name)) }
         await loadSidebarData()
         return project
+    }
+
+    // MARK: - Manage clients and projects (R2-6)
+
+    /// Rename, refusing a name another client has in any case, with the text creating gives.
+    func renameClient(id: String, to name: String) async throws {
+        try await database.renameClientReportingClash(id: id, newName: name)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Delete a client; its projects move to "No client". Returns how many were detached.
+    @discardableResult
+    func deleteClient(id: String) async throws -> Int {
+        let detached = try await database.deleteClient(id: id)
+        await refreshAfterWrite(touching: [])
+        return detached
+    }
+
+    func renameProject(id: String, to name: String) async throws {
+        try await database.renameProjectReportingClash(id: id, newName: name)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Move a project to a client, or to none (nil).
+    func moveProject(id: String, toClient clientID: String?) async throws {
+        try await database.setProjectClient(projectID: id, clientID: clientID)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// Delete a project; its images stay (Unfiled when it was their only project).
+    func deleteProject(id: String) async throws {
+        try await database.deleteProject(id: id)
+        await refreshAfterWrite(touching: [])
+    }
+
+    /// How many images a project holds, for the delete confirmation.
+    func imageCount(projectID: String) async -> Int {
+        (try? await database.assetCount(projectID: projectID)) ?? 0
+    }
+
+    /// Images dropped on a project: added (their other projects kept), or with ⌥ moved (R2-1 `move`).
+    func dropImages(_ ids: Set<String>, onto projectID: String, move: Bool) async throws {
+        try await file(ids, to: projectID, mode: move ? .move : .add)
+    }
+
+    /// Reload everything after an edit made outside this view model (Settings).
+    func reloadAfterExternalEdit() async {
+        await refreshAfterWrite(touching: [])
+    }
+
+    // MARK: - Mac selection
+
+    /// A click in the grid with ⌘ or ⇧ held or not; the inspector follows the selection.
+    func click(_ id: String, _ kind: GridSelection.Click, order: [String]) async {
+        selection.click(id, kind, order: order)
+        await syncInspectorToSelection()
+    }
+
+    func selectAll(order: [String]) async {
+        selection.selectAll(order: order)
+        await syncInspectorToSelection()
+    }
+
+    func clearSelection() async {
+        selection.clear()
+        await syncInspectorToSelection()
+    }
+
+    /// One image selected: the inspector shows it. None or several: it shows nothing (the browser
+    /// says "N images selected").
+    private func syncInspectorToSelection() async {
+        if selection.selected.count == 1, let only = selection.selected.first {
+            await selectAsset(only)
+        } else {
+            selectedAssetID = nil
+            inspectorDetail = nil
+        }
     }
 
     // MARK: - Tag manager
