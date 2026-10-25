@@ -20,9 +20,9 @@ extension AppDatabase {
             }
             let trimmed = idOrName.trimmingCharacters(in: .whitespaces)
             let matches = try Project
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
                 .order(Column("created_at"), Column("id"))
                 .fetchAll(db)
+                .filter { NameMatch.same($0.name, trimmed) }
             // Two projects differing only in case (made before names were unique, or by an older
             // build): taking the older would file to a guess. Say which two.
             if matches.count > 1 {

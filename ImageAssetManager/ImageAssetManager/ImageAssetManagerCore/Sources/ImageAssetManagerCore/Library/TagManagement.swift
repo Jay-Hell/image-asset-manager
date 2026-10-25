@@ -49,8 +49,9 @@ extension AppDatabase {
         try await write { db in
             guard try Tag.exists(db, key: id) else { throw TagError.notFound }
             if let clash = try Tag
-                .filter(SQL("LOWER(name) = LOWER(\(trimmed)) AND id != \(id)"))
-                .fetchOne(db) {
+                .filter(Column("id") != id)
+                .fetchAll(db)
+                .first(where: { NameMatch.same($0.name, trimmed) }) {
                 throw TagError.nameInUse(clash.name)
             }
             try db.execute(sql: "UPDATE tags SET name = ? WHERE id = ?", arguments: [trimmed, id])

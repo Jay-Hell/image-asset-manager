@@ -216,6 +216,49 @@ struct SidebarTests {
     }
 }
 
+// MARK: - Name clashes beyond ASCII (fix cycle 1)
+
+/// SQLite's LOWER folds A-Z only, so "Écran" and "écran" passed as two names. Each pair: a
+/// name differing only in a non-ASCII capital clashes; one differing in its accent does not.
+@Suite("Name clashes fold case beyond ASCII")
+struct UnicodeNameClashTests {
+
+    @Test func tagsClashOnÉcranAndÉcran() async throws {
+        let db = try makeDB()
+        _ = try await tag(db, "Écran", on: [])
+        let other = try await tag(db, "other", on: [])
+        await #expect(throws: TagError.nameInUse("Écran")) { try await db.renameTag(id: other, newName: "écran") }
+        try await db.renameTag(id: other, newName: "ecran")
+        #expect(try await db.fetchTagRows().map(\.name).sorted() == ["ecran", "Écran"])
+    }
+
+    @Test func projectsClashOnÉcranAndÉcranWhenMadeRenamedOrFound() async throws {
+        let db = try makeDB()
+        let made = try await db.createProject(name: "Écran", clientID: nil, description: nil)
+        let again = try await db.createProject(name: "écran", clientID: nil, description: nil)
+        #expect(again.created == false && again.project.id == made.project.id)
+        #expect(try await db.findProject(idOrName: "ÉCRAN")?.id == made.project.id)
+        let other = try await addProject(db, "Other")
+        await #expect(throws: ProjectError.nameInUse) { try await db.renameProject(id: other, newName: "écran") }
+        // The pair: the accentless name is another name.
+        #expect(try await db.createProject(name: "Ecran", clientID: nil, description: nil).created)
+    }
+
+    @Test func clientsClashOnÉcranAndÉcranWhenMadeOrRenamed() async throws {
+        let db = try makeDB()
+        let made = try await db.createClient(name: "Écran")
+        #expect(made.created)
+        let again = try await db.createClient(name: "écran")
+        #expect(again.created == false && again.client.id == made.client.id)
+        #expect(try await db.findOrCreateClient(name: "ÉCRAN").id == made.client.id)
+        let other = try await db.createClient(name: "Other").client
+        await #expect(throws: ClientError.nameInUse) { try await db.renameClient(id: other.id, newName: "écran") }
+        // The pairs: its own name in another case is fine, and the accentless name is another name.
+        try await db.renameClient(id: made.client.id, newName: "ÉCRAN")
+        #expect(try await db.createClient(name: "Ecran").created)
+    }
+}
+
 // MARK: - R2-1 leftovers
 
 @Suite("findProject ambiguity and mergeProjects family rule")
