@@ -342,6 +342,7 @@ export const TOOLS = [
         provider:        { type: 'string', description: 'Who made it, as a provider ID such as those get_asset reports (default "imported")' },
         model:           { type: 'string', description: 'The model ID that made it, as the provider names it (default "imported")' },
         actual_cost_gbp: { type: 'number', minimum: 0, description: 'What it cost, in pounds, if known. Recorded as spend marked external. Leave it out when unknown: it is then recorded as unknown, never as zero.' },
+        actual_cost_usd: { type: 'number', minimum: 0, description: 'What it cost, in dollars, if known; the app converts it to pounds at its own rate. Use this or actual_cost_gbp, not both.' },
         created_at:      { type: 'string', description: 'When the image was made, ISO 8601. Default: the file\'s modification time. The import time is recorded separately.' },
         project:         { type: 'string', description: 'Project name or UUID (primary). It must exist (create_project).' },
         projects:        { type: 'array', items: { type: 'string' }, description: 'More project names or UUIDs; the first is the primary when `project` is not given' },

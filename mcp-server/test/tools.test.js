@@ -194,8 +194,8 @@ test('the library tool schemas and the Swift LibraryTools dispatch agree on tool
       : read;
     assert.deepEqual(props(name), expected, `${name}: schema and Swift disagree`);
   }
-  // Counted by hand: 1 + 3 + 0 + 4 + 13 + 0.
-  assert.equal(fields, 21, `read ${fields} fields from LibraryTools.swift`);
+  // Counted by hand: 1 + 3 + 0 + 4 + 14 + 0.
+  assert.equal(fields, 22, `read ${fields} fields from LibraryTools.swift`);
   assert.ok(fromProxy.every(k => argKeys(section('import_asset')).includes(k)), 'the app reads every field the proxy sends');
 });
 

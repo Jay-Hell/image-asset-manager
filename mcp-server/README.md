@@ -73,6 +73,31 @@ curl http://localhost:47821/health
 | `get_spend` | No | Spend summary, optional project/date filter |
 | `mark_asset_used` | Yes | Record usage + updates index.json |
 
+## The `iam` command
+
+`iam` lets a script generate an image, or import one it made, through the app, so the script needs no
+API key of its own. It opens the app if it is not running, exactly as the MCP proxy does.
+
+```bash
+iam generate --prompt "a glass cube" --quality standard --aspect 16:9 --project Labs --tag charged-glass --out ./art
+iam import a.png b.png --project "Ionic Test" --prompts-json prompts.json --provider openrouter \
+  --model google/gemini-2.5-flash-image --cost-usd 0.04 --tag film
+iam projects
+iam tags
+iam --help        # every option
+```
+
+Output is JSON on stdout (`generate`: ids and file paths; `import`: one line per file with its asset ID and
+`new` or `duplicate`). Errors go to stderr. Exit codes: 0 every file succeeded, 1 any failed, 2 usage error.
+
+**Install** (once per machine):
+
+```bash
+cd mcp-server && npm link                       # puts `iam` on the PATH
+# or, without npm link:
+ln -s "$PWD/bin/iam.js" ~/.local/bin/iam
+```
+
 ## Development
 
 ```bash
