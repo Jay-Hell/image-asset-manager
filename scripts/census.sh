@@ -24,7 +24,7 @@ MIN_TESTS="${MIN_TESTS:-0}"
 # Separate floors for the two suites; the defaults are the counts at the last green census.
 MIN_CORE="${MIN_CORE:-362}"
 MIN_APP="${MIN_APP:-2}"
-MIN_NODE="${MIN_NODE:-31}"
+MIN_NODE="${MIN_NODE:-57}"
 # A generic simulator destination: no named device to go missing when Xcode updates its list.
 IPAD="${IPAD_DESTINATION:-generic/platform=iOS Simulator}"
 PROJECT="$ROOT/ImageAssetManager/ImageAssetManager.xcodeproj"
