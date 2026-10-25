@@ -48,12 +48,14 @@ public struct ImageExporter: Sendable {
         return outputURL
     }
 
-    /// SVG leaves as it is held: the library's own bytes, named `.svg`. Raster presets do not
-    /// apply to vector assets in release 1.
+    /// SVG leaves sanitised (ruling 8): the copy the preview draws, named `.svg`, never the stored
+    /// bytes, which may be any file an agent imported. One the sanitiser cannot read is refused and
+    /// nothing is written. Raster presets do not apply to vector assets.
     @discardableResult
     public static func exportVector(svgData: Data, to destinationDir: URL, baseFilename: String) throws -> URL {
+        guard let safe = SVGDocument.sanitisedForPreview(svgData) else { throw ExportError.unreadableSource }
         let outputURL = destinationDir.appending(path: "\(baseFilename).\(MediaType.svg.fileExtension)")
-        try svgData.write(to: outputURL, options: .atomic)
+        try safe.write(to: outputURL, options: .atomic)
         return outputURL
     }
 

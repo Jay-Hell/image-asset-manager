@@ -23,6 +23,8 @@ public enum AssetUploadError: Error, Equatable, LocalizedError {
     case fileUnreadable(path: String)
     case tooLarge(bytes: Int, maxBytes: Int)
     case refused(status: Int, body: String)
+    /// An SVG the sanitiser could not read: refused rather than sent as stored.
+    case svgNotSanitisable
 
     public var errorDescription: String? {
         switch self {
@@ -42,6 +44,8 @@ public enum AssetUploadError: Error, Equatable, LocalizedError {
             return "Asset is \(bytes) bytes, over the \(maxBytes) byte upload limit"
         case .refused(let status, let body):
             return "Upload destination returned HTTP \(status): \(body)"
+        case .svgNotSanitisable:
+            return "The SVG could not be read to sanitise it, so it was not uploaded"
         }
     }
 }
@@ -156,14 +160,25 @@ public struct AssetUploader: Sendable {
         // Destination first: never read a file for a target we would refuse.
         let url = try Self.validate(raw)
 
-        guard let data = try? Data(contentsOf: fileURL) else {
+        guard var data = try? Data(contentsOf: fileURL) else {
             throw AssetUploadError.fileUnreadable(path: fileURL.path(percentEncoded: false))
         }
         guard data.count <= Self.maxBytes else {
             throw AssetUploadError.tooLarge(bytes: data.count, maxBytes: Self.maxBytes)
         }
+        // Ruling 8: an SVG (by its name or its bytes) leaves as the sanitised copy the preview
+        // draws, never as stored, and one the sanitiser cannot read does not leave at all.
+        let isSVG = (fileURL.pathExtension.lowercased() == MediaType.svg.fileExtension)
+            || MediaType(sniffing: data) == .svg
+        if isSVG {
+            guard let safe = SVGDocument.sanitisedForPreview(data) else { throw AssetUploadError.svgNotSanitisable }
+            guard safe.count <= Self.maxBytes else {
+                throw AssetUploadError.tooLarge(bytes: safe.count, maxBytes: Self.maxBytes)
+            }
+            data = safe
+        }
 
-        let contentType = Self.contentType(forFilename: fileURL.lastPathComponent)
+        let contentType = isSVG ? MediaType.svg.rawValue : Self.contentType(forFilename: fileURL.lastPathComponent)
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.timeoutInterval = Self.timeout

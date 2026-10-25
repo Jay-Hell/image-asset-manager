@@ -126,6 +126,21 @@ struct ProjectToolTests {
         #expect(try await rig.count("SELECT COUNT(*) FROM projects") == 2)
     }
 
+    /// Settings renames through `renameProject`: it must not make "labs" beside "Labs" either.
+    @Test func renamingAProjectToAnotherProjectsNameInAnyCaseIsRefusedAndChangesNothing() async throws {
+        let rig = try LibraryRig()
+        let labs = try await rig.db.createProject(name: "Labs", clientID: nil, description: nil).project
+        let hero = try await rig.db.createProject(name: "Hero", clientID: nil, description: nil).project
+        await #expect(throws: ProjectError.nameInUse) {
+            try await rig.db.renameProject(id: hero.id, newName: " labs ")
+        }
+        #expect(try await rig.db.fetchProjects().map(\.name).sorted() == ["Hero", "Labs"])
+        // The pair: a project may change the case of its own name, or take a name no other has.
+        try await rig.db.renameProject(id: labs.id, newName: "LABS")
+        try await rig.db.renameProject(id: hero.id, newName: "Hero images")
+        #expect(try await rig.db.fetchProjects().map(\.name).sorted() == ["Hero images", "LABS"])
+    }
+
     @Test func anUnknownClientIsRefusedWithTheClientsThereAreAndNoProjectIsWritten() async throws {
         let rig = try LibraryRig()
         _ = try await rig.call("create_client", ["name": "Ionic"])

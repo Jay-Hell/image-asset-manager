@@ -83,7 +83,8 @@ actor MCPServer {
         do {
             let (method, path, headers, body) = try await readRequest(conn)
             if method == "GET", path == "/health" {
-                await send(Data(#"{"status":"ok"}"#.utf8), to: conn)
+                // Which copy is answering, for the proxy's check after it opens the app. No token.
+                await send(MCPHealth.body(bundleURL: Bundle.main.bundleURL, info: Bundle.main.infoDictionary ?? [:]), to: conn)
             } else if method == "POST", path == "/tool" {
                 if let rejection = gate(headers: headers) {
                     await send(rejection.body, status: rejection.status, to: conn)

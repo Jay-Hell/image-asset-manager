@@ -7,6 +7,17 @@ public enum ClientError: Error, Equatable {
     case notFound
 }
 
+public enum ProjectError: Error, Equatable, LocalizedError {
+    /// Another project has this name, ignoring case and surrounding spaces (as `create_project`).
+    case nameInUse
+
+    public var errorDescription: String? {
+        switch self {
+        case .nameInUse: return "Another project already has that name (names are compared ignoring case)."
+        }
+    }
+}
+
 // MARK: - Clients
 extension AppDatabase {
     public func fetchClients() async throws -> [Client] {
@@ -75,10 +86,17 @@ extension AppDatabase {
         try await write { db in try project.insert(db) }
     }
 
+    /// Throws `ProjectError.nameInUse` when another project has the name in any case, the same
+    /// rule as `createProject`; a project may change the case of its own name.
     public func renameProject(id: String, newName: String) async throws {
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         try await write { db in
+            let collision = try Project
+                .filter(SQL("LOWER(name) = LOWER(\(trimmed))"))
+                .filter(Column("id") != id)
+                .fetchCount(db)
+            if collision > 0 { throw ProjectError.nameInUse }
             try db.execute(sql: "UPDATE projects SET name = ? WHERE id = ?", arguments: [trimmed, id])
         }
     }

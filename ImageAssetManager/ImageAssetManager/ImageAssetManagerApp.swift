@@ -69,11 +69,12 @@ struct ImageAssetManagerApp: App {
     }
 
     #if os(macOS)
+    /// Runs in every window's `.task`; only the first starts a server (`MCPServerOwner`, Core).
     @MainActor
     private func startMCPServer(_ env: AppEnvironment) async {
-        let server = MCPServer(database: env.database, libraryURL: env.libraryURL)
-        ImageAssetManagerDelegate.mcpServer = server
-        await server.start()
+        await ImageAssetManagerDelegate.mcpServers.startOnce(
+            make: { MCPServer(database: env.database, libraryURL: env.libraryURL) },
+            start: { await $0.start() })
     }
     #endif
 }
@@ -104,10 +105,11 @@ private struct LibraryUnavailableView: View {
 
 #if os(macOS)
 final class ImageAssetManagerDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
-    static var mcpServer: MCPServer?
+    /// The app's one MCP server, however many windows open.
+    static let mcpServers = MCPServerOwner<MCPServer>()
 
     func applicationWillTerminate(_ notification: Notification) {
-        let server = Self.mcpServer
+        let server = Self.mcpServers.server
         let sema = DispatchSemaphore(value: 0)
         Task {
             await server?.stop()

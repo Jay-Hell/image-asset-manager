@@ -75,12 +75,12 @@ struct ExportSheetView: View {
     private var presetList: some View {
         Group {
             if isVector {
-                // Raster presets do not apply to SVG in release 1: it leaves as stored.
+                // Raster presets do not apply to SVG: it leaves sanitised (ruling 8).
                 VStack(spacing: 12) {
                     Image(systemName: "scribble.variable")
                         .font(.system(size: 36))
                         .foregroundStyle(Color.appTextSecondary)
-                    Text("SVG exports exactly as stored. Raster presets don't apply.")
+                    Text("SVG exports sanitised: scripts and external references are removed. Raster presets don't apply.")
                         .font(.callout)
                         .foregroundStyle(Color.appTextSecondary)
                 }
@@ -181,7 +181,7 @@ struct ExportSheetView: View {
 
     private var actionBar: some View {
         HStack {
-            Text(isVector ? "SVG, as stored"
+            Text(isVector ? "SVG, sanitised"
                  : viewModel.selectedPresetIDs.isEmpty
                  ? "Select at least one preset"
                  : "\(viewModel.selectedPresetIDs.count) preset(s) selected")

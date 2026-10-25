@@ -224,4 +224,43 @@ struct AssetUploaderUploadTests {
         )
         #expect(receipt.status == 204)
     }
+
+    /// Ruling 8 (R2-1 finding 9): an SVG can be any file an agent named, so it leaves sanitised.
+    @Test("sends an SVG sanitised: no script or handler leaves, the drawing does; a raster goes byte for byte")
+    func svgLeavesSanitised() async throws {
+        let svg = Data("""
+            <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" onload="alert(1)">\
+            <script>alert(2)</script><rect width="4" height="4" fill="red"/></svg>
+            """.utf8)
+        let file = try makeTempFile(named: "logo.svg", bytes: svg)
+        let recorder = Recorder()
+        let uploader = AssetUploader(transport: MockTransport(recorder: recorder))
+        let receipt = try await uploader.upload(fileAt: file, to: "https://portal.ionicconsulting.co.uk/artefact-asset/tok.en")
+        let sent = String(decoding: try #require(await recorder.body), as: UTF8.self)
+        #expect(!sent.contains("script") && !sent.contains("onload") && !sent.contains("alert"))
+        #expect(sent.contains("<rect"))
+        #expect(receipt.bytes == sent.utf8.count)
+        #expect(receipt.contentType == "image/svg+xml")
+
+        // An SVG named as something else is still sent sanitised: the bytes decide.
+        let disguised = try makeTempFile(named: "logo.png", bytes: svg)
+        let again = Recorder()
+        _ = try await AssetUploader(transport: MockTransport(recorder: again))
+            .upload(fileAt: disguised, to: "https://portal.ionicconsulting.co.uk/x")
+        #expect(!String(decoding: try #require(await again.body), as: UTF8.self).contains("script"))
+
+        // An SVG the sanitiser cannot read is refused, never sent as it is.
+        let broken = try makeTempFile(named: "broken.svg", bytes: Data("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect".utf8))
+        let none = Recorder()
+        await #expect(throws: AssetUploadError.svgNotSanitisable) {
+            try await AssetUploader(transport: MockTransport(recorder: none)).upload(fileAt: broken, to: "https://portal.ionicconsulting.co.uk/x")
+        }
+        #expect(await none.callCount == 0)
+
+        // The pair: a PNG goes as it is.
+        let png = try makeTempFile(named: "brand.png", bytes: pngBytes)
+        let raster = Recorder()
+        _ = try await AssetUploader(transport: MockTransport(recorder: raster)).upload(fileAt: png, to: "https://portal.ionicconsulting.co.uk/x")
+        #expect(await raster.body == pngBytes)
+    }
 }
