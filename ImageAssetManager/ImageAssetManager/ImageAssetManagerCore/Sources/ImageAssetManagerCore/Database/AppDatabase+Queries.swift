@@ -133,22 +133,62 @@ extension AppDatabase {
                 db, sql: "SELECT asset_id FROM asset_projects WHERE project_id = ?", arguments: [id])
             try db.execute(sql: "UPDATE variants SET project_id = NULL WHERE project_id = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM asset_projects WHERE project_id = ?", arguments: [id])
-            for assetID in affected {
-                let hasPrimary = try Bool.fetchOne(
-                    db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
-                    arguments: [assetID]) ?? false
-                if !hasPrimary {
-                    try db.execute(sql: """
-                        UPDATE asset_projects SET is_primary = 1
-                        WHERE asset_id = ? AND project_id = (
-                            SELECT ap.project_id FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
-                            WHERE ap.asset_id = ? ORDER BY p.name COLLATE NOCASE, p.id LIMIT 1)
-                        """, arguments: [assetID, assetID])
-                }
-                try Self.mirrorPrimaryProject(assetID: assetID, db)
-            }
+            for assetID in affected { try Self.repairPrimary(assetID: assetID, db) }
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id])
             for assetID in affected { try Self.fileVariantFamily(ofAsset: assetID, db) }
+        }
+    }
+
+    /// An asset left with links but no primary takes the first of them by name ignoring case, then
+    /// ID; `assets.project_id` then follows the primary (or goes NULL with no link).
+    static func repairPrimary(assetID: String, _ db: Database) throws {
+        let hasPrimary = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND is_primary = 1)",
+            arguments: [assetID]) ?? false
+        if !hasPrimary {
+            try db.execute(sql: """
+                UPDATE asset_projects SET is_primary = 1
+                WHERE asset_id = ? AND project_id = (
+                    SELECT ap.project_id FROM asset_projects ap JOIN projects p ON p.id = ap.project_id
+                    WHERE ap.asset_id = ? ORDER BY p.name COLLATE NOCASE, p.id LIMIT 1)
+                """, arguments: [assetID, assetID])
+        }
+        try mirrorPrimaryProject(assetID: assetID, db)
+    }
+
+    /// The ⌥-drop: file assets into `to` and take them out of `from` only; their other projects
+    /// stay. If `from` was an asset's primary, `to` becomes it. With no `from` (the view is not a
+    /// project) or `from == to` this is a plain add. Each asset's variant family is refiled by its
+    /// members, as `fileAssets` does. Returns the IDs filed and those that match no asset.
+    public func moveAssets(
+        assetIDs: [String], from: String?, to: String
+    ) async throws -> (filed: [String], unknown: [String]) {
+        guard let from, from != to else {
+            return try await fileAssets(assetIDs: assetIDs, projectID: to, mode: .add, primary: false)
+        }
+        var seen: Set<String> = []
+        let ids = assetIDs.filter { seen.insert($0).inserted }
+        return try await write { db in
+            var filed: [String] = [], unknown: [String] = []
+            for id in ids {
+                guard try Asset.exists(db, key: id) else { unknown.append(id); continue }
+                let wasPrimary = try Bool.fetchOne(
+                    db, sql: "SELECT EXISTS(SELECT 1 FROM asset_projects WHERE asset_id = ? AND project_id = ? AND is_primary = 1)",
+                    arguments: [id, from]) ?? false
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO asset_projects (asset_id, project_id, is_primary) VALUES (?, ?, 0)",
+                    arguments: [id, to])
+                try db.execute(sql: "DELETE FROM asset_projects WHERE asset_id = ? AND project_id = ?", arguments: [id, from])
+                if wasPrimary {
+                    try db.execute(
+                        sql: "UPDATE asset_projects SET is_primary = (project_id = ?) WHERE asset_id = ?",
+                        arguments: [to, id])
+                }
+                try Self.repairPrimary(assetID: id, db)
+                try Self.fileVariantFamily(ofAsset: id, db)
+                filed.append(id)
+            }
+            return (filed, unknown)
         }
     }
 

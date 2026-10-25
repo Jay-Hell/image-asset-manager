@@ -499,6 +499,23 @@ public final class AppDatabase: Sendable {
     ) async throws -> T {
         try await writer.write(block)
     }
+
+    /// One event after every committed transaction that touches `clients`, `projects`,
+    /// `asset_projects` or `variants`, whoever made it (a window, Settings, an MCP tool call).
+    /// The sidebar and grid reload on it. The observation starts before this returns, so a write
+    /// made next is seen; events that pile up while the reader is busy collapse into one. It stops
+    /// when the stream's consumer does.
+    public func libraryChanges() -> AsyncStream<Void> {
+        AsyncStream(Void.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let observation = DatabaseRegionObservation(
+                tracking: Table("clients"), Table("projects"), Table("asset_projects"), Table("variants"))
+            let cancellable = observation.start(
+                in: writer,
+                onError: { _ in continuation.finish() },
+                onChange: { _ in continuation.yield() })
+            continuation.onTermination = { _ in cancellable.cancel() }
+        }
+    }
 }
 
 /// Derive a default variant-family name from an asset's prompt (preferred) or filename.

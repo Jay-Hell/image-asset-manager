@@ -41,8 +41,51 @@ private func mirror(_ db: AppDatabase, _ asset: String) async throws -> String? 
     try await db.read { try String?.fetchOne($0, sql: "SELECT project_id FROM assets WHERE id = ?", arguments: [asset]) ?? nil }
 }
 
+private actor EventCount {
+    private(set) var value = 0
+    func bump() { value += 1 }
+}
+
+/// Waits (up to 5 s) for the count to reach `target`; false if it never does.
+private func reaches(_ count: EventCount, _ target: Int) async -> Bool {
+    for _ in 0..<100 {
+        if await count.value >= target { return true }
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+    return false
+}
+
 @Suite("Manage clients and projects")
 struct ManageTests {
+
+    @Test func everyWriteToAClientProjectFilingOrFamilyTableIsAnnouncedAndOtherTablesAreNot() async throws {
+        let db = try makeDB()
+        try await addAsset(db, "a1")
+        let events = EventCount()
+        let stream = db.libraryChanges()
+        let listener = Task { for await _ in stream { await events.bump() } }
+        defer { listener.cancel() }
+
+        _ = try await db.createClient(name: "Acme")
+        #expect(await reaches(events, 1), "a client written")
+        let p = try await addProject(db, "One")
+        #expect(await reaches(events, 2), "a project written")
+        try await db.write { try $0.execute(sql: "INSERT INTO asset_projects (asset_id, project_id, is_primary) VALUES ('a1', ?, 1)", arguments: [p]) }
+        #expect(await reaches(events, 3), "a filing written")
+        _ = try await db.attachToVariantFamily(assetID: "a1", projectID: p, familyName: "Heroes", prompt: nil, filename: "a1.png")
+        try await Task.sleep(for: .milliseconds(400))
+        let settled = await events.value
+        #expect(settled >= 3)
+        // Only the variants table changes here, so only that table can announce it.
+        try await db.write { try $0.execute(sql: "UPDATE variants SET name = 'Renamed'") }
+        #expect(await reaches(events, settled + 1), "a family written")
+        // The pair: a tag is none of the four tables, so nothing more is announced.
+        try await Task.sleep(for: .milliseconds(400))
+        let before = await events.value
+        _ = try await db.findOrCreateTag(name: "sky")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(await events.value == before)
+    }
 
     @Test func deletingAClientDetachesItsProjectsAndKeepsTheirImages() async throws {
         let db = try makeDB()
@@ -129,6 +172,14 @@ struct ManageTests {
         // The pair: a family filed under the surviving project must be untouched.
         _ = try await db.fileAssets(assetIDs: ["a3"], projectID: p2, mode: .move, primary: false)
         _ = try await db.attachToVariantFamily(assetID: "a3", projectID: p2, familyName: "Solo", prompt: nil, filename: "a3.png")
+        // A family whose members all end up in one surviving project: both are in One (primary) and
+        // Two, so after the delete the family must be refiled under Two, not left at NULL.
+        for id in ["a4", "a5"] {
+            try await addAsset(db, id)
+            _ = try await db.fileAssets(assetIDs: [id], projectID: p1, mode: .move, primary: false)
+            _ = try await db.fileAssets(assetIDs: [id], projectID: p2, mode: .add, primary: false)
+            _ = try await db.attachToVariantFamily(assetID: id, projectID: p1, familyName: "Pair", prompt: nil, filename: "\(id).png")
+        }
         let before = try await count(db, "SELECT COUNT(*) FROM variants")
         let membersBefore = try await count(db, "SELECT COUNT(*) FROM variant_members")
 
@@ -137,10 +188,10 @@ struct ManageTests {
         #expect(try await count(db, "SELECT COUNT(*) FROM variants") == before)
         #expect(try await count(db, "SELECT COUNT(*) FROM variant_members") == membersBefore)
         let families: [[String?]] = try await db.read {
-            try Row.fetchAll($0, sql: "SELECT name, project_id FROM variants WHERE name IN ('Heroes','Solo') ORDER BY name")
+            try Row.fetchAll($0, sql: "SELECT name, project_id FROM variants WHERE name IN ('Heroes','Pair','Solo') ORDER BY name")
                 .map { [$0["name"] as String?, $0["project_id"] as String?] }
         }
-        #expect(families == [["Heroes", nil], ["Solo", p2]])
+        #expect(families == [["Heroes", nil], ["Pair", p2], ["Solo", p2]])
     }
 
     @Test func aDropAddsOrMovesAndTheFamilyFollows() async throws {
@@ -177,6 +228,61 @@ struct ManageTests {
         #expect(try await familyProject() == nil)
         _ = try await db.fileAssets(assetIDs: ["a4"], projectID: p2, mode: .move, primary: false)
         #expect(try await familyProject() == p2)
+    }
+
+    @Test func anOptionDropTakesImagesOutOfTheViewedProjectOnlyAndKeepsTheOthers() async throws {
+        let db = try makeDB()
+        let a = try await addProject(db, "A")
+        let b = try await addProject(db, "B")
+        let c = try await addProject(db, "C")
+        for id in ["a1", "a2", "a3"] { try await addAsset(db, id) }
+        // a1: A (primary) and C. a2: C (primary), A and B. a3: A alone.
+        _ = try await db.fileAssets(assetIDs: ["a1"], projectID: a, mode: .move, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a1"], projectID: c, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a2"], projectID: c, mode: .move, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a2"], projectID: a, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a2"], projectID: b, mode: .add, primary: false)
+        _ = try await db.fileAssets(assetIDs: ["a3"], projectID: a, mode: .move, primary: false)
+
+        let result = try await db.moveAssets(assetIDs: ["a1", "a2", "zz"], from: a, to: b)
+        #expect(result.filed == ["a1", "a2"] && result.unknown == ["zz"])
+        // a1 leaves A (its primary) for B, keeps C; B takes over as primary.
+        #expect(Set(try await links(db, "a1")) == [b, c])
+        #expect(try await primary(db, "a1") == b)
+        #expect(try await mirror(db, "a1") == b)
+        // a2 was already in B: A goes, B and C stay, and its primary C is not disturbed.
+        #expect(Set(try await links(db, "a2")) == [b, c])
+        #expect(try await primary(db, "a2") == c)
+        #expect(try await mirror(db, "a2") == c)
+        // The pair: a3 was not dropped, so it is still in A alone.
+        #expect(try await links(db, "a3") == [a])
+
+        // Not a project view (nil), or the same project: a plain add, nothing is removed.
+        _ = try await db.moveAssets(assetIDs: ["a3"], from: nil, to: c)
+        #expect(Set(try await links(db, "a3")) == [a, c])
+        #expect(try await primary(db, "a3") == a)
+        _ = try await db.moveAssets(assetIDs: ["a3"], from: c, to: c)
+        #expect(Set(try await links(db, "a3")) == [a, c])
+    }
+
+    @Test func anOptionDropRefilesTheFamilyByItsMembers() async throws {
+        let db = try makeDB()
+        let a = try await addProject(db, "A")
+        let b = try await addProject(db, "B")
+        for id in ["f1", "f2"] {
+            try await addAsset(db, id)
+            _ = try await db.fileAssets(assetIDs: [id], projectID: a, mode: .move, primary: false)
+            _ = try await db.attachToVariantFamily(assetID: id, projectID: a, familyName: "Heroes", prompt: nil, filename: "\(id).png")
+        }
+        func familyProject() async throws -> String? {
+            try await db.read { try String?.fetchOne($0, sql: "SELECT project_id FROM variants WHERE name = 'Heroes'") ?? nil }
+        }
+        #expect(try await familyProject() == a)
+        _ = try await db.moveAssets(assetIDs: ["f1"], from: a, to: b)
+        #expect(try await familyProject() == nil, "split across A and B")
+        _ = try await db.moveAssets(assetIDs: ["f2"], from: a, to: b)
+        #expect(try await familyProject() == b, "together again, under B")
+        #expect(try await count(db, "SELECT COUNT(*) FROM variant_members") == 2)
     }
 
     @Test func aRenameThatClashesIsRefusedInAnyCaseAndNothingChanges() async throws {
