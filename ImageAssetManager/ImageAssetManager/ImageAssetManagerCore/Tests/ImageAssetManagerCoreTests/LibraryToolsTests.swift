@@ -242,6 +242,57 @@ struct FileAssetsToolTests {
         #expect(message.contains("existing projects: P1, P2, P3"))
         #expect(try await rig.links("a1").rows == ["P1*", "P2"])
     }
+
+    /// The name of the project an asset's family is filed under, or nil for none.
+    private func familyProject(_ rig: LibraryRig, of assetID: String) async throws -> String? {
+        try await rig.db.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT p.name FROM variant_members m JOIN variants v ON v.id = m.variant_id
+                JOIN projects p ON p.id = v.project_id WHERE m.asset_id = ?
+                """, arguments: [assetID])
+        }
+    }
+
+    /// The rule: a family is filed under a project only while every member's primary is that project.
+    /// When its members' primaries differ (or one has none), the family is filed under no project:
+    /// shown in the unfiltered library, under neither project.
+    @Test func aFamilyFollowsItsAssetsWhenEveryMemberSharesThePrimaryAndIsUnfiledWhenTheyDiffer() async throws {
+        let rig = try LibraryRig()
+        for name in ["P1", "P3"] { _ = try await rig.call("create_project", ["name": name]) }
+        let p1 = try await rig.projectID("P1"), p3 = try await rig.projectID("P3")
+        let a = try #require(try await rig.call("import_asset", [
+            "data_base64": png([1]).base64EncodedString(), "media_type": "image/png", "original_filename": "a.png",
+            "variant_family": "Heroes", "project": "P1"])["asset_id"] as? String)
+        let b = try #require(try await rig.call("import_asset", [
+            "data_base64": png([2]).base64EncodedString(), "media_type": "image/png", "original_filename": "b.png",
+            "variant_family": "Heroes", "project": "P1"])["asset_id"] as? String)
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p1).count == 1)
+
+        // Both moved: the family goes with them.
+        _ = try await rig.call("file_assets", ["asset_ids": [a, b], "project": "P3", "mode": "move"])
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p3).count == 1)
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p1).isEmpty)
+        #expect(try await familyProject(rig, of: a) == "P3")
+        // A later generate there with the same family name joins it rather than starting a second.
+        let family = try await rig.db.findOrCreateVariant(name: "Heroes", projectID: p3)
+        #expect(try await rig.count("SELECT COUNT(*) FROM variants") == 1)
+        #expect(try await rig.db.variantMemberCount(variantID: family.id) == 2)
+
+        // One moved back: the members disagree, so the family is under neither project.
+        _ = try await rig.call("file_assets", ["asset_ids": [a], "project": "P1", "mode": "move"])
+        #expect(try await familyProject(rig, of: a) == nil)
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p1).isEmpty)
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p3).isEmpty)
+        #expect(try await rig.db.fetchVariantFamilies().count == 1)
+
+        // `add` without `primary` leaves every primary, so the family stays as it is.
+        _ = try await rig.call("file_assets", ["asset_ids": [b], "project": "P1"])
+        #expect(try await familyProject(rig, of: b) == nil)
+        // `add` with `primary` makes them agree again: the family follows.
+        _ = try await rig.call("file_assets", ["asset_ids": [b], "project": "P1", "primary": true])
+        #expect(try await familyProject(rig, of: b) == "P1")
+        #expect(try await rig.db.fetchVariantFamilies(projectID: p1).count == 1)
+    }
 }
 
 // MARK: - import_asset
@@ -375,6 +426,31 @@ struct ImportAssetToolTests {
         let other = try await rig.call("import_asset", args(png([7, 8])))
         #expect(other["duplicate"] as? Bool == false)
         #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 2)
+    }
+
+    @Test func aRetryAfterAFailedFollowUpWriteAttachesTheMissingVariantFamily() async throws {
+        let rig = try LibraryRig()
+        let bytes = png([5, 5])
+        let first = try await rig.call("import_asset", args(bytes, ["variant_family": "Labs heroes"]))
+        let id = try #require(first["asset_id"] as? String)
+        // The state a failed follow-up write leaves: the asset stored, its family never attached.
+        try await rig.db.write { db in
+            try db.execute(sql: "DELETE FROM variant_members WHERE asset_id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM variants")
+        }
+        #expect(try await rig.db.isInVariantFamily(assetID: id) == false)
+
+        let retry = try await rig.call("import_asset", args(bytes, ["variant_family": "Labs heroes"]))
+        #expect(retry["duplicate"] as? Bool == true)
+        let families = try await rig.db.read { db in
+            try String.fetchAll(db, sql: "SELECT v.name FROM variant_members m JOIN variants v ON v.id = m.variant_id WHERE m.asset_id = ?", arguments: [id])
+        }
+        #expect(families == ["Labs heroes"])
+
+        // The pair: a duplicate that has its family is not given a second one, whatever name is sent.
+        _ = try await rig.call("import_asset", args(bytes, ["variant_family": "Something else"]))
+        #expect(try await rig.count("SELECT COUNT(*) FROM variant_members") == 1)
+        #expect(try await rig.count("SELECT COUNT(*) FROM variants") == 1)
     }
 
     @Test func bytesThatAreNotWhatTheyAreLabelledAreRefusedAndNothingIsWritten() async throws {

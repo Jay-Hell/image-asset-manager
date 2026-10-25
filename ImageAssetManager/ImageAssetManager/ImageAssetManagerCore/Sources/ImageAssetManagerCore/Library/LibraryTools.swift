@@ -189,7 +189,8 @@ public struct LibraryTools: Sendable {
         // --- 3. A duplicate is not stored again: its projects and tags are merged ----------
         let hash = data.sha256
         if let existing = try await database.findAsset(fileHash: hash) {
-            return try await mergeDuplicate(existing, projects: projects, tags: tags, notes: [])
+            return try await mergeDuplicate(existing, projects: projects, tags: tags,
+                                            family: family, filename: originalName, notes: [])
         }
 
         // --- 4. Stored by what the bytes are (pass C), then the rows ---------------------
@@ -221,7 +222,8 @@ public struct LibraryTools: Sendable {
         if let raced, let existing = try await database.fetchAsset(id: raced) {
             // The same bytes arrived by another call between the check and the insert.
             try? FileManager.default.removeItem(at: stored.fileURL)
-            return try await mergeDuplicate(existing, projects: projects, tags: tags, notes: [])
+            return try await mergeDuplicate(existing, projects: projects, tags: tags,
+                                            family: family, filename: originalName, notes: [])
         }
 
         if !projects.isEmpty {
@@ -241,11 +243,21 @@ public struct LibraryTools: Sendable {
         return try await response(for: asset.id, duplicate: false, spendRecorded: spend != nil, notes: notes)
     }
 
-    private func mergeDuplicate(_ existing: Asset, projects: [Project], tags: [String], notes: [String]) async throws -> [String: Any] {
+    private func mergeDuplicate(
+        _ existing: Asset, projects: [Project], tags: [String], family: String?, filename: String?, notes: [String]
+    ) async throws -> [String: Any] {
         try await database.mergeProjects(assetID: existing.id, projectIDs: projects.map(\.id))
         for name in tags {
             let tag = try await database.findOrCreateTag(name: name)
             try await database.attachTag(tagID: tag.id, assetID: existing.id)
+        }
+        // A retry after the first import's follow-up writes failed: the asset was stored but never
+        // joined a family. Attach it now, as Keep does, so every asset has one.
+        if try await !database.isInVariantFamily(assetID: existing.id) {
+            let primary = try await database.fetchAsset(id: existing.id)?.projectID
+            try await database.attachToVariantFamily(
+                assetID: existing.id, projectID: primary, familyName: family, prompt: existing.prompt,
+                filename: filename ?? existing.filename)
         }
         try await exportIndex()
         let note = "These bytes are already in the library (same SHA-256): nothing was stored again, no spend was recorded, and the projects and tags given were added to the existing asset."

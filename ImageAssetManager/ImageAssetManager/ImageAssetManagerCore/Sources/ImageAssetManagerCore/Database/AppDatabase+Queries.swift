@@ -646,6 +646,7 @@ extension AppDatabase {
                     }
                 }
                 try Self.mirrorPrimaryProject(assetID: id, db)
+                try Self.fileVariantFamily(ofAsset: id, db)
                 filed.append(id)
             }
             return (filed, unknown)
@@ -691,6 +692,21 @@ extension AppDatabase {
                 (SELECT project_id FROM asset_projects WHERE asset_id = ? AND is_primary = 1 LIMIT 1)
             WHERE id = ?
             """, arguments: [assetID, assetID])
+    }
+
+    /// The asset's variant family filed where its members are: under their primary project when
+    /// every member has the same one, else under none (`variants.project_id` NULL), so a family
+    /// split across projects shows in the whole library and under neither project. Call after
+    /// `mirrorPrimaryProject`, which this reads.
+    static func fileVariantFamily(ofAsset assetID: String, _ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE variants SET project_id = (
+                SELECT CASE WHEN COUNT(*) = COUNT(a.project_id) AND COUNT(DISTINCT a.project_id) = 1
+                            THEN MIN(a.project_id) END
+                FROM variant_members m JOIN assets a ON a.id = m.asset_id
+                WHERE m.variant_id = variants.id)
+            WHERE id IN (SELECT variant_id FROM variant_members WHERE asset_id = ?)
+            """, arguments: [assetID])
     }
 
     static func clientNamed(_ name: String, _ db: Database) throws -> Client? {
