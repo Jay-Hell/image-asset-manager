@@ -121,10 +121,11 @@ test('a launched app that reports another path fails, naming both paths, and no 
   // Only /health was asked (the fake refuses anything else), and it stopped at the first answer.
   assert.equal(w.healthChecks, 3 + 2);
 
-  // An app that reports no path at all (a build before 1.2) is refused the same way.
+  // An app that reports no path at all is a build before 1.2 (the store's 1.1.0, until 1.2 ships).
+  // The proxy opened the copy at APP by path, so it goes on: refusing it would break every agent's
+  // first call against the installed app. A path that is reported and differs is still refused, above.
   const old = world({ up: c => c >= L + 1000, tokenAt: () => L + 900, reported: { status: 'ok' } });
-  await assert.rejects(old.client.ensureAppRunning(), error =>
-    error.message.includes(APP) && /reported no path/.test(error.message));
+  assert.deepEqual(await old.client.ensureAppRunning(), { launched: true, waitedMs: 1000 });
 
   // The pair: the path it launched, even written with a trailing slash, goes on.
   const same = world({ up: c => c >= L + 1000, tokenAt: () => L + 900, reported: { status: 'ok', bundle_path: `${APP}/` } });

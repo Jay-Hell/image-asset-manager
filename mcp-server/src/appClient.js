@@ -161,8 +161,11 @@ export function createAppClient({
       await sleep(LAUNCH_POLL_MS);
       const answered = await health();
       if (answered === null) continue;
-      // The copy answering must be the one opened, before any token or tool call is sent.
-      if (!isSameBundle(answered.bundle_path, appPath)) {
+      // The copy answering must be the one opened, before any token or tool call is sent. A copy that
+      // reports no path is a build before 1.2 (the store's 1.1.0 until 1.2 ships); it is accepted,
+      // because the proxy has just opened the copy at appPath by path. A reported path must match.
+      const legacy = answered.bundle_path === undefined || answered.bundle_path === null;
+      if (!legacy && !isSameBundle(answered.bundle_path, appPath)) {
         const version = answered.version ? ` ${answered.version}${answered.build ? ` (${answered.build})` : ''}` : '';
         const which = answered.bundle_path
           ? `the copy answering is ${answered.bundle_path}${version}`
