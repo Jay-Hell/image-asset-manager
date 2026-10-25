@@ -14,16 +14,39 @@
  * Exit codes: 0 every file succeeded, 1 any failed, 2 a usage error. Errors go to stderr.
  */
 
-import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, extname, join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { createAppClient } from './appClient.js';
 import { prepareImportArgs } from './tools.js';
 
 /**
- * Dollars to pounds for --cost-usd. The app owns this rate (`Currency.usdToGBP`, Core); a node test
- * reads that file and fails if the two differ.
+ * Copies a generated image into `dir` under its own name. It never replaces a file already there
+ * (COPYFILE_EXCL: the copy fails with EEXIST), so a clash is an error for that file only.
  */
-export const USD_TO_GBP = 0.79;
+export function copyInto(from, dir) {
+  mkdirSync(dir, { recursive: true });
+  const to = join(dir, basename(from));
+  copyFileSync(from, to, constants.COPYFILE_EXCL);
+  return to;
+}
+
+/** A path made absolute with its existing part resolved through links, so a link cannot hide where it points. */
+function resolved(p) {
+  let head = resolve(p);
+  const tail = [];
+  while (!existsSync(head) && dirname(head) !== head) { tail.unshift(basename(head)); head = dirname(head); }
+  return join(realpathSync(head), ...tail);
+}
+
+/** True when `dir` is, or lies under, the folder holding any of the library files. */
+export function insideLibrary(dir, libraryFiles) {
+  const target = resolved(dir);
+  return libraryFiles.some(file => {
+    const folder = resolved(dirname(file));
+    const rel = relative(folder, target);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && rel.split(sep)[0] !== '..');
+  });
+}
 
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
@@ -59,7 +82,7 @@ import options (one JSON line per file: file, asset_id, status new|duplicate):
   --key <id>             The key to look up in --prompts-json
   --provider <id>        Who made it (default: imported)
   --model <id>           The model that made it (default: imported)
-  --cost-usd <n>         What each file cost, in dollars (converted to pounds at ${USD_TO_GBP})
+  --cost-usd <n>         What each file cost, in dollars (the app converts it to pounds at its own rate)
   --cost-gbp <n>         What each file cost, in pounds
   --tag <tag>            A tag to apply; repeat for more
   --family <name>        Variant family to add it to
@@ -201,7 +224,7 @@ export function importArguments(parsed, file, table) {
   if (parsed.provider !== undefined) args.provider = parsed.provider;
   if (parsed.model !== undefined) args.model = parsed.model;
   if (parsed.costGbp !== undefined) args.actual_cost_gbp = Number(parsed.costGbp);
-  if (parsed.costUsd !== undefined) args.actual_cost_gbp = Math.round(Number(parsed.costUsd) * USD_TO_GBP * 1e6) / 1e6;
+  if (parsed.costUsd !== undefined) args.actual_cost_usd = Number(parsed.costUsd); // the app converts, at its own rate
   if (parsed.tags.length) args.tags = parsed.tags;
   if (parsed.family !== undefined) args.variant_family = parsed.family;
   return args;
@@ -228,7 +251,7 @@ export async function run(argv, {
   prepare = prepareImportArgs,
   stdout = process.stdout,
   stderr = process.stderr,
-  copy = (from, dir) => { mkdirSync(dir, { recursive: true }); const to = join(dir, basename(from)); copyFileSync(from, to); return to; },
+  copy = copyInto,
   readText = file => readFileSync(file, 'utf8'),
 } = {}) {
   const out = line => stdout.write(`${line}\n`);
@@ -275,12 +298,17 @@ export async function run(argv, {
         const result = await client.callAppTool('generate', generateArguments(parsed));
         const generated = (result?.generated ?? []).map(g => ({ asset_id: g.asset_id, file_path: g.file_path }));
         let status = EXIT_OK;
-        if (parsed.out !== undefined) {
+        if (parsed.out !== undefined && insideLibrary(parsed.out, generated.map(g => g.file_path))) {
+          // The library's folder is the app's to know, so this can only be checked once the app has answered.
+          err(`iam: --out ${parsed.out} is inside the library folder; nothing was copied. The images are filed at their file_path.`);
+          status = EXIT_FAILED;
+        } else if (parsed.out !== undefined) {
           for (const item of generated) {
             try {
               item.copied_to = copy(item.file_path, parsed.out);
             } catch (error) {
-              err(`iam: could not copy ${item.file_path} to ${parsed.out}: ${error.message}`);
+              const why = error.code === 'EEXIST' ? 'a file of that name is already there (not replaced)' : error.message;
+              err(`iam: could not copy ${item.file_path} to ${parsed.out}: ${why}`);
               status = EXIT_FAILED;
             }
           }

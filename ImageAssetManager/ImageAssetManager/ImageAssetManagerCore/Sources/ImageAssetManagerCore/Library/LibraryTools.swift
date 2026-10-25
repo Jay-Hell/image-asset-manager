@@ -19,11 +19,15 @@ public struct LibraryTools: Sendable {
     private let database: AppDatabase
     private let libraryURL: URL
     private let now: @Sendable () -> Date
+    /// The dollar-to-pound rate for `actual_cost_usd`: the one the app uses for OpenRouter's actual cost.
+    private let fx: @Sendable () -> Decimal
 
-    public init(database: AppDatabase, libraryURL: URL, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(database: AppDatabase, libraryURL: URL, now: @escaping @Sendable () -> Date = { Date() },
+                fx: @escaping @Sendable () -> Decimal = { CatalogueStore.shared.snapshot().fx }) {
         self.database = database
         self.libraryURL = libraryURL
         self.now = now
+        self.fx = fx
     }
 
     public func call(_ name: String, arguments: Data) async throws -> Data {
@@ -168,6 +172,16 @@ public struct LibraryTools: Sendable {
                 throw MCPGenerateError.invalidParam("actual_cost_gbp must be a number of pounds, zero or more")
             }
             cost = number.doubleValue
+        }
+        if let rawUSD = args["actual_cost_usd"], !(rawUSD is NSNull) {
+            guard cost == nil else {
+                throw MCPGenerateError.invalidParam("give actual_cost_gbp or actual_cost_usd, not both")
+            }
+            guard let number = rawUSD as? NSNumber, number.doubleValue.isFinite, number.doubleValue >= 0,
+                  CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                throw MCPGenerateError.invalidParam("actual_cost_usd must be a number of dollars, zero or more")
+            }
+            cost = NSDecimalNumber(decimal: Catalogue.decimal(number.doubleValue) * fx()).doubleValue
         }
         var projects: [Project] = []
         var rawProjects: [String] = []

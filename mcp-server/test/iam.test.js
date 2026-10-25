@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  run, parseArgs, lookupPrompt, importArguments, UsageError, HELP, OPTION_NAMES, USD_TO_GBP,
+  run, parseArgs, lookupPrompt, importArguments, UsageError, HELP, OPTION_NAMES,
   EXIT_OK, EXIT_FAILED, EXIT_USAGE,
 } from '../src/iam.js';
 
@@ -124,20 +124,65 @@ test('importArguments: --key wins, else the file name without its extension; --p
   assert.equal('prompt' in importArguments(base, '/x/shot.png', undefined), false);
 });
 
-test('--cost-usd is converted at the rate the app uses; --cost-gbp is passed as it is', () => {
+test('--cost-usd goes as dollars (the app converts); --cost-gbp goes as pounds', () => {
   const base = { project: 'P', tags: [] };
-  assert.equal(importArguments({ ...base, costUsd: '0.04' }, '/x/a.png').actual_cost_gbp, 0.0316);
-  assert.equal(importArguments({ ...base, costGbp: '0.05' }, '/x/a.png').actual_cost_gbp, 0.05);
-  assert.equal(importArguments({ ...base, costUsd: '0' }, '/x/a.png').actual_cost_gbp, 0);
-  assert.equal('actual_cost_gbp' in importArguments(base, '/x/a.png'), false, 'unknown cost is left out, never 0');
+  const usd = importArguments({ ...base, costUsd: '0.04' }, '/x/a.png');
+  assert.equal(usd.actual_cost_usd, 0.04);
+  assert.equal('actual_cost_gbp' in usd, false);
+  const gbp = importArguments({ ...base, costGbp: '0.05' }, '/x/a.png');
+  assert.equal(gbp.actual_cost_gbp, 0.05);
+  assert.equal('actual_cost_usd' in gbp, false);
+  assert.equal(importArguments({ ...base, costUsd: '0' }, '/x/a.png').actual_cost_usd, 0);
+  const none = importArguments(base, '/x/a.png');
+  assert.equal('actual_cost_gbp' in none || 'actual_cost_usd' in none, false, 'unknown cost is left out, never 0');
 });
 
-test('USD_TO_GBP agrees with the app (Currency.usdToGBP in Core)', () => {
-  const swift = fs.readFileSync(path.join(HERE, '..', '..', 'ImageAssetManager', 'ImageAssetManager',
-    'ImageAssetManagerCore', 'Sources', 'ImageAssetManagerCore', 'Currency.swift'), 'utf8');
-  const rate = /usdToGBP: Decimal = ([0-9.]+)/.exec(swift);
-  assert.ok(rate, 'Currency.usdToGBP not found');
-  assert.equal(USD_TO_GBP, Number(rate[1]));
+// ---- the real copy, against a real folder ----------------------------------------------------
+
+test('generate --out never replaces a file already in the folder: that file fails, exit 1, the others carry on', async () => {
+  const lib = path.join(tmp(), 'assets'), dest = tmp();
+  fs.mkdirSync(lib);
+  fs.writeFileSync(path.join(lib, 'a1.png'), 'library one');
+  fs.writeFileSync(path.join(lib, 'a2.png'), 'library two');
+  fs.writeFileSync(path.join(dest, 'a1.png'), 'mine, keep me');
+  const answers = { generate: { generated: [{ asset_id: 'A1', file_path: path.join(lib, 'a1.png') }, { asset_id: 'A2', file_path: path.join(lib, 'a2.png') }] } };
+  const r = await iam(['generate', '--prompt', 'p', '--out', dest], { client: fakeClient({ answers }) });
+  assert.equal(r.code, EXIT_FAILED);
+  assert.equal(fs.readFileSync(path.join(dest, 'a1.png'), 'utf8'), 'mine, keep me');
+  assert.equal(fs.readFileSync(path.join(dest, 'a2.png'), 'utf8'), 'library two');
+  assert.match(r.stderr, /a1\.png.*already there/);
+  assert.equal('copied_to' in r.json[0].generated[0], false);
+  assert.equal(r.json[0].generated[1].copied_to, path.join(dest, 'a2.png'));
+});
+
+test('generate --out inside the library folder is refused and nothing is written there', async () => {
+  const lib = path.join(tmp(), 'assets');
+  fs.mkdirSync(path.join(lib, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(lib, 'a1.png'), 'library one');
+  const answers = { generate: { generated: [{ asset_id: 'A1', file_path: path.join(lib, 'a1.png') }] } };
+  for (const out of [lib, path.join(lib, 'sub'), path.join(lib, 'new', 'deeper'), path.join(lib, 'sub', '..')]) {
+    const r = await iam(['generate', '--prompt', 'p', '--out', out], { client: fakeClient({ answers }) });
+    assert.equal(r.code, EXIT_FAILED, out);
+    assert.match(r.stderr, /inside the library folder/);
+    assert.equal('copied_to' in r.json[0].generated[0], false);
+  }
+  assert.deepEqual(fs.readdirSync(lib).sort(), ['a1.png', 'sub'], 'nothing new in the library');
+  // The pair: a sibling folder whose name merely starts the same is outside, and is copied to.
+  const sibling = `${lib}-copy`;
+  const ok = await iam(['generate', '--prompt', 'p', '--out', sibling], { client: fakeClient({ answers }) });
+  assert.equal(ok.code, EXIT_OK);
+  assert.equal(fs.readFileSync(path.join(sibling, 'a1.png'), 'utf8'), 'library one');
+});
+
+test('generate --out through a link into the library is refused', async () => {
+  const root = tmp(), lib = path.join(root, 'assets');
+  fs.mkdirSync(lib);
+  fs.writeFileSync(path.join(lib, 'a1.png'), 'library one');
+  fs.symlinkSync(lib, path.join(root, 'shortcut'));
+  const answers = { generate: { generated: [{ asset_id: 'A1', file_path: path.join(lib, 'a1.png') }] } };
+  const r = await iam(['generate', '--prompt', 'p', '--out', path.join(root, 'shortcut')], { client: fakeClient({ answers }) });
+  assert.equal(r.code, EXIT_FAILED);
+  assert.deepEqual(fs.readdirSync(lib), ['a1.png']);
 });
 
 // ---- run: output shape, exit codes, what leaves the process ---------------------------------
@@ -249,8 +294,9 @@ test('import sends the bytes and metadata the proxy prepares, and prints one JSO
   assert.equal(sent.media_type, 'image/png');
   assert.equal(sent.original_filename, 'one.png');
   assert.deepEqual(
-    { prompt: sent.prompt, project: sent.project, provider: sent.provider, model: sent.model, cost: sent.actual_cost_gbp, tags: sent.tags },
-    { prompt: 'first', project: 'Ionic Test', provider: 'openrouter', model: 'google/gemini-2.5-flash-image', cost: 0.0316, tags: ['film'] });
+    { prompt: sent.prompt, project: sent.project, provider: sent.provider, model: sent.model, cost: sent.actual_cost_usd, tags: sent.tags },
+    { prompt: 'first', project: 'Ionic Test', provider: 'openrouter', model: 'google/gemini-2.5-flash-image', cost: 0.04, tags: ['film'] });
+  assert.equal('actual_cost_gbp' in sent, false, 'dollars go as dollars: the app converts');
 });
 
 test('import: one bad file exits 1 but the others are still imported; each file gets its line', async () => {

@@ -15,10 +15,10 @@ private struct LibraryRig {
     let dir: URL
     let tools: LibraryTools
 
-    init() throws {
+    init(fx: Decimal = 0.79) throws {
         db = try AppDatabase(path: ":memory:")
         dir = makeTempDirectory()
-        tools = LibraryTools(database: db, libraryURL: dir, now: { importTime })
+        tools = LibraryTools(database: db, libraryURL: dir, now: { importTime }, fx: { fx })
     }
 
     func call(_ name: String, _ arguments: [String: Any] = [:]) async throws -> [String: Any] {
@@ -368,6 +368,35 @@ struct ImportAssetToolTests {
         // index.json carries it, so the offline fallback sees it too.
         let index = try String(contentsOf: rig.dir.appending(path: "index.json"), encoding: .utf8)
         #expect(index.contains(id))
+    }
+
+    @Test func aCostInDollarsIsConvertedAtTheAppsRateAndRecordedAsExternalSpend() async throws {
+        // Worked by hand: $0.04 at 0.5 is £0.02 (a rate the catalogue could set), not £0.0316 at 0.79.
+        let rig = try LibraryRig(fx: 0.5)
+        let result = try await rig.call("import_asset", args(png([6, 1]), ["actual_cost_usd": 0.04]))
+        let id = try #require(result["asset_id"] as? String)
+        #expect(result["spend_recorded"] as? Bool == true)
+        let asset = try #require(try await rig.db.fetchAsset(id: id))
+        #expect(asset.actualCost == 0.02)
+        #expect(asset.estimatedCost == 0.02)
+        let spend = try await rig.db.read { db in try SpendLog.fetchAll(db) }
+        #expect(spend.count == 1)
+        #expect(spend.first?.actualCost == 0.02)
+        #expect(spend.first?.source == "external")
+        // The pair: the same dollars at the fallback rate give a different sum.
+        let other = try LibraryRig(fx: 0.79)
+        let second = try await other.call("import_asset", args(png([6, 2]), ["actual_cost_usd": 0.04]))
+        let secondID = try #require(second["asset_id"] as? String)
+        #expect(try await other.db.fetchAsset(id: secondID)?.actualCost == 0.0316)
+    }
+
+    @Test func poundsAndDollarsTogetherAreRefusedAndNothingIsStored() async throws {
+        let rig = try LibraryRig()
+        let message = await rig.refusal("import_asset", args(png([6, 3]), ["actual_cost_gbp": 0.05, "actual_cost_usd": 0.04]))
+        #expect(message.contains("not both"))
+        #expect(await rig.refusal("import_asset", args(png([6, 4]), ["actual_cost_usd": -1])).contains("actual_cost_usd"))
+        #expect(try await rig.count("SELECT COUNT(*) FROM assets") == 0)
+        #expect(rig.assetFiles().isEmpty)
     }
 
     @Test func theCallersCreatedAtWinsOverTheFilesDateAndWithNeitherItIsTheImportTime() async throws {
